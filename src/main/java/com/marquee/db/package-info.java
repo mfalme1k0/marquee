@@ -1,4 +1,5 @@
 /**
+ * jack
  * Database bootstrap: creates the SQLite file and tables on first run
  * (from {@code schema.sql}) and opens connections.
  *

@@ -1,4 +1,5 @@
 /**
+ * Chaser
  * HTTP plumbing shared by all handlers: router (route match -> 404, method
  * check -> 405), JSON body parsing (malformed -> 400), and the single error
  * envelope used everywhere:

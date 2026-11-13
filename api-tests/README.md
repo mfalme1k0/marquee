@@ -1,6 +1,6 @@
 # API Test Collection
 
-Save the Postman/Bruno collection (or a curl script) in this folder.
+Save the Apidog collection (or a curl script) in this folder.
 
 ## How to run
 TODO: import steps / command.

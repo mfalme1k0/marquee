@@ -1,4 +1,5 @@
 /**
+ * chaser
  * HTTP layer. One job: parse HTTP requests and write HTTP responses.
  *
  * <p><b>Does:</b> read path/query/body, call a service, map the result or

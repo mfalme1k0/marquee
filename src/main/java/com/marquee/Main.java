@@ -13,7 +13,7 @@ public final class Main {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
 
-        // TODO (Fidel): init DB (schema + PRAGMA foreign_keys = ON), register router.
+        // TODO : init DB (schema + PRAGMA foreign_keys = ON), register router.
         server.start();
         System.out.println("Marquee listening on :" + port);
     }

@@ -1,4 +1,5 @@
 /**
+ * jack
  * Data layer. One job: talk to SQLite and run SQL.
  *
  * <p><b>Does:</b> hand-written SQL via JDBC, row-to-model mapping, pagination

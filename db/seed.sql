@@ -1,4 +1,4 @@
--- Seed data for manual testing. Owner: Francis.
+-- Seed data for manual testing. Owner: Jack.
 --
 -- Usage (after the server has created marquee.db once):
 --   sqlite3 marquee.db < db/seed.sql
