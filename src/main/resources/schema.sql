@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS film_genres (
     PRIMARY KEY (film_id, genre_id)
 );
 
+-- Speeds up filtering films by genre and cascading genre deletions.
+CREATE INDEX IF NOT EXISTS idx_film_genres_genre
+    ON film_genres(genre_id);
+
 CREATE TABLE IF NOT EXISTS screenings (
     screening_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     film_id        INTEGER NOT NULL REFERENCES films(film_id) ON DELETE CASCADE,
