@@ -44,6 +44,8 @@ public final class DatabaseManager {
 
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA foreign_keys = ON");
+            // Waits up to 5 seconds when another connection holds a database lock.
+            statement.execute("PRAGMA busy_timeout = 5000");
             return connection;
         } catch (SQLException exception) {
             try {
