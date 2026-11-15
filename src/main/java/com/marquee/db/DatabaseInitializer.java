@@ -9,15 +9,14 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Objects;
 
-public class DatabaseInitializer {
+public final class DatabaseInitializer {
 
     private final DatabaseManager databaseManager;
 
     // Creates an initializer using the application's database manager.
     public DatabaseInitializer(DatabaseManager databaseManager) {
         this.databaseManager = Objects.requireNonNull(
-                databaseManager,
-                "databaseManager must not be null"
+                databaseManager, "databaseManager cannot not be null"
         );
     }
 
@@ -39,7 +38,7 @@ public class DatabaseInitializer {
                 }
 
                 connection.commit();
-            } catch (SQLException | IOException exception) {
+            } catch (SQLException | IOException | RuntimeException | Error exception) {
                 try {
                     connection.rollback();
                 } catch (SQLException rollbackException) {
@@ -50,7 +49,6 @@ public class DatabaseInitializer {
             }
         }
     }
-
 
     // Reads the specified SQL resource (e.g., schema.sql or seed.sql) and returns its contents as a string.
     private String loadSqlScript(String resourceName) throws IOException {
@@ -84,7 +82,7 @@ public class DatabaseInitializer {
                  SELECT 1
                  FROM sqlite_schema
                  WHERE type = 'table'
-                   AND name NOT LIKE 'sqlite_%'
+                   AND name NOT GLOB 'sqlite_*'
             );
             """;
 

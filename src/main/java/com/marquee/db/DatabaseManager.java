@@ -7,7 +7,6 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.Objects;
 
 public final class DatabaseManager {
 
@@ -44,6 +43,7 @@ public final class DatabaseManager {
 
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA foreign_keys = ON");
+
             // Waits up to 5 seconds when another connection holds a database lock.
             statement.execute("PRAGMA busy_timeout = 5000");
             return connection;
@@ -58,4 +58,3 @@ public final class DatabaseManager {
         }
     }
 }
-
