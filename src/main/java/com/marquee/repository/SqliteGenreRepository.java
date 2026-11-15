@@ -1,6 +1,7 @@
 package com.marquee.repository;
 
 import com.marquee.db.DatabaseManager;
+import com.marquee.exceptions.DuplicateGenreException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.RepositoryException;
 import com.marquee.model.Genre;
@@ -52,6 +53,10 @@ public final class SqliteGenreRepository implements GenreRepository {
             }
 
         } catch (SQLException exception) {
+            if (isUniqueConstraintViolation(exception)) {
+                throw new DuplicateGenreException(genre.name());
+            }
+
             throw new RepositoryException("Failed to create genre", exception);
         }
     }
@@ -165,6 +170,10 @@ public final class SqliteGenreRepository implements GenreRepository {
             return new Genre(genreId, genre.name());
 
         } catch (SQLException exception) {
+            if (isUniqueConstraintViolation(exception)) {
+                throw new DuplicateGenreException(genre.name());
+            }
+
             throw new RepositoryException("Failed to update genre", exception);
         }
     }
@@ -184,6 +193,11 @@ public final class SqliteGenreRepository implements GenreRepository {
         } catch (SQLException exception) {
             throw new RepositoryException("Failed to delete genre", exception);
         }
+    }
+
+    // Checks whether the SQL exception represents a unique-constraint violation.
+    private boolean isUniqueConstraintViolation(SQLException exception) {
+        return exception.getErrorCode() == 2067;
     }
 
     // Maps the current result-set row to a Genre record.
