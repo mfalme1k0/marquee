@@ -1,6 +1,7 @@
 package com.marquee.repository;
 
-import com.marquee.db.DatabaseManager;
+import com.marquee.db.transactions.ConnectionProvider;
+import com.marquee.db.transactions.TransactionManager;
 import com.marquee.exceptions.DuplicateGenreException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.RepositoryException;
@@ -16,14 +17,23 @@ import java.util.Optional;
 
 public final class SqliteGenreRepository implements GenreRepository {
 
-    private final DatabaseManager databaseManager;
+    private final ConnectionProvider connectionProvider;
+    private final TransactionManager transactionManager;
 
-    public SqliteGenreRepository(DatabaseManager databaseManager) {
-        if (databaseManager == null) {
-            throw new RepositoryException("Database manager must not be null");
+    // Creates a genre repository using the connection provider and transaction manager.
+    public SqliteGenreRepository(
+            ConnectionProvider connectionProvider,
+            TransactionManager transactionManager) {
+        if (connectionProvider == null) {
+            throw new RepositoryException("Connection provider must not be null");
         }
 
-        this.databaseManager = databaseManager;
+        if (transactionManager == null) {
+            throw new RepositoryException("Transaction manager must not be null");
+        }
+
+        this.connectionProvider = connectionProvider;
+        this.transactionManager = transactionManager;
     }
 
     // Creates a genre and returns it with its generated database ID.
@@ -33,32 +43,34 @@ public final class SqliteGenreRepository implements GenreRepository {
             throw new RepositoryException("Genre must not be null");
         }
 
-        String sql = """
-                INSERT INTO genres (name)
-                VALUES (?)
-                """;
+        return transactionManager.executeInTransaction(connection -> {
+            String sql = """
+                    INSERT INTO genres (name)
+                    VALUES (?)
+                    """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+            try {
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    statement.setString(1, genre.name());
+                    statement.executeUpdate();
+                }
 
-            statement.setString(1, genre.name());
-            statement.executeUpdate();
+                try (PreparedStatement idStatement = connection.prepareStatement(
+                        "SELECT last_insert_rowid()");
+                     ResultSet resultSet = idStatement.executeQuery()) {
 
-            try (PreparedStatement idStatement = connection.prepareStatement(
-                    "SELECT last_insert_rowid()");
-                 ResultSet resultSet = idStatement.executeQuery()) {
+                    resultSet.next();
+                    return new Genre(resultSet.getLong(1), genre.name());
+                }
 
-                resultSet.next();
-                return new Genre(resultSet.getLong(1), genre.name());
+            } catch (SQLException exception) {
+                if (isUniqueConstraintViolation(exception)) {
+                    throw new DuplicateGenreException(genre.name());
+                }
+
+                throw new RepositoryException("Failed to create genre", exception);
             }
-
-        } catch (SQLException exception) {
-            if (isUniqueConstraintViolation(exception)) {
-                throw new DuplicateGenreException(genre.name());
-            }
-
-            throw new RepositoryException("Failed to create genre", exception);
-        }
+        });
     }
 
     // Retrieves a genre by its ID.
@@ -71,22 +83,19 @@ public final class SqliteGenreRepository implements GenreRepository {
                 WHERE genre_id = ?
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        return withConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setLong(1, genreId);
 
-            statement.setLong(1, genreId);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        return Optional.empty();
+                    }
 
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return Optional.empty();
+                    return Optional.of(mapGenre(resultSet));
                 }
-
-                return Optional.of(mapGenre(resultSet));
             }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to retrieve genre", exception);
-        }
+        });
     }
 
     // Retrieves a genre by its unique name.
@@ -99,22 +108,19 @@ public final class SqliteGenreRepository implements GenreRepository {
                 WHERE name = ?
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        return withConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setString(1, name);
 
-            statement.setString(1, name);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        return Optional.empty();
+                    }
 
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return Optional.empty();
+                    return Optional.of(mapGenre(resultSet));
                 }
-
-                return Optional.of(mapGenre(resultSet));
             }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to retrieve genre", exception);
-        }
+        });
     }
 
     // Retrieves all genres ordered alphabetically by name.
@@ -126,21 +132,19 @@ public final class SqliteGenreRepository implements GenreRepository {
                 ORDER BY name
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet resultSet = statement.executeQuery()) {
+        return withConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql);
+                 ResultSet resultSet = statement.executeQuery()) {
 
-            List<Genre> genres = new ArrayList<>();
+                List<Genre> genres = new ArrayList<>();
 
-            while (resultSet.next()) {
-                genres.add(mapGenre(resultSet));
+                while (resultSet.next()) {
+                    genres.add(mapGenre(resultSet));
+                }
+
+                return List.copyOf(genres);
             }
-
-            return List.copyOf(genres);
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to retrieve genres", exception);
-        }
+        });
     }
 
     // Updates an existing genre's name.
@@ -157,7 +161,7 @@ public final class SqliteGenreRepository implements GenreRepository {
                 WHERE genre_id = ?
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
+        try (Connection connection = connectionProvider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
 
             statement.setString(1, genre.name());
@@ -184,15 +188,12 @@ public final class SqliteGenreRepository implements GenreRepository {
     public boolean deleteGenreById(long genreId) {
         String sql = "DELETE FROM genres WHERE genre_id = ?";
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-
-            statement.setLong(1, genreId);
-            return statement.executeUpdate() > 0;
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to delete genre", exception);
-        }
+        return withConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setLong(1, genreId);
+                return statement.executeUpdate() > 0;
+            }
+        });
     }
 
     // Checks whether the SQL exception represents a unique-constraint violation.
@@ -206,5 +207,20 @@ public final class SqliteGenreRepository implements GenreRepository {
                 resultSet.getLong("genre_id"),
                 resultSet.getString("name")
         );
+    }
+
+    // Executes a standalone database operation and closes its connection afterward.
+    // Converts JDBC failures into the repository's unchecked exception hierarchy.
+    private <T> T withConnection(SqlFunction<T> operation) {
+        try (Connection connection = connectionProvider.getConnection()) {
+            return operation.apply(connection);
+        } catch (SQLException exception) {
+            throw new RepositoryException("Database operation failed", exception);
+        }
+    }
+
+    @FunctionalInterface
+    private interface SqlFunction<T> {
+        T apply(Connection connection) throws SQLException;
     }
 }
