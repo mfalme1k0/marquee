@@ -1,6 +1,7 @@
 package com.marquee.repository;
 
-import com.marquee.db.DatabaseManager;
+import com.marquee.db.transactions.ConnectionProvider;
+import com.marquee.db.transactions.TransactionManager;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.RepositoryException;
 import com.marquee.exceptions.ScreeningNotFoundException;
@@ -16,14 +17,24 @@ import java.util.Optional;
 
 public final class SqliteScreeningRepository implements ScreeningRepository {
 
-    private final DatabaseManager databaseManager;
+    private final ConnectionProvider connectionProvider;
+    private final TransactionManager transactionManager;
 
-    public SqliteScreeningRepository(DatabaseManager databaseManager) {
-        if (databaseManager == null) {
-            throw new RepositoryException("Database manager must not be null");
+    // Creates a screening repository using the connection provider and transaction manager.
+    public SqliteScreeningRepository(
+            ConnectionProvider connectionProvider,
+            TransactionManager transactionManager) {
+
+        if (connectionProvider == null) {
+            throw new RepositoryException("Connection provider must not be null");
         }
 
-        this.databaseManager = databaseManager;
+        if (transactionManager == null) {
+            throw new RepositoryException("Transaction manager must not be null");
+        }
+
+        this.connectionProvider = connectionProvider;
+        this.transactionManager = transactionManager;
     }
 
     // Creates a screening and returns it with its generated database ID.
@@ -37,42 +48,44 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
             throw new RepositoryException("Screening film ID must not be null");
         }
 
-        String sql = """
-            INSERT INTO screenings (film_id, venue, screening_time)
-            SELECT film_id, ?, ?
-            FROM films
-            WHERE film_id = ?
-            """;
+        return transactionManager.executeInTransaction(connection -> {
+            String sql = """
+                    INSERT INTO screenings (film_id, venue, screening_time)
+                    SELECT film_id, ?, ?
+                    FROM films
+                    WHERE film_id = ?
+                    """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+            try {
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    statement.setString(1, screening.venue());
+                    statement.setString(2, screening.screeningTime());
+                    statement.setLong(3, screening.filmId());
 
-            statement.setString(1, screening.venue());
-            statement.setString(2, screening.screeningTime());
-            statement.setLong(3, screening.filmId());
-
-            if (statement.executeUpdate() == 0) {
-                throw new FilmNotFoundException(screening.filmId());
-            }
-
-            try (PreparedStatement idStatement = connection.prepareStatement(
-                    "SELECT last_insert_rowid()");
-                 ResultSet resultSet = idStatement.executeQuery()) {
-
-                if (!resultSet.next()) {
-                    throw new RepositoryException(
-                            "Failed to retrieve the generated screening ID"
-                    );
+                    if (statement.executeUpdate() == 0) {
+                        throw new FilmNotFoundException(screening.filmId());
+                    }
                 }
 
-                long screeningId = resultSet.getLong(1);
+                try (PreparedStatement idStatement = connection.prepareStatement(
+                        "SELECT last_insert_rowid()");
+                     ResultSet resultSet = idStatement.executeQuery()) {
 
-                return findScreeningById(connection, screeningId);
+                    if (!resultSet.next()) {
+                        throw new RepositoryException(
+                                "Failed to retrieve the generated screening ID"
+                        );
+                    }
+
+                    long screeningId = resultSet.getLong(1);
+
+                    return findScreeningById(connection, screeningId);
+                }
+
+            } catch (SQLException exception) {
+                throw new RepositoryException("Failed to create screening", exception);
             }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to create screening", exception);
-        }
+        });
     }
 
     // Retrieves a screening by its ID.
@@ -87,22 +100,19 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 WHERE s.screening_id = ?
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        return withConnection("Failed to retrieve screening", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setLong(1, screeningId);
 
-            statement.setLong(1, screeningId);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        return Optional.empty();
+                    }
 
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return Optional.empty();
+                    return Optional.of(mapScreening(resultSet));
                 }
-
-                return Optional.of(mapScreening(resultSet));
             }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to retrieve screening", exception);
-        }
+        });
     }
 
     // Retrieves all screenings ordered by screening time.
@@ -116,21 +126,19 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 ORDER BY s.screening_time, s.screening_id
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet resultSet = statement.executeQuery()) {
+        return withConnection("Failed to retrieve screenings", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql);
+                 ResultSet resultSet = statement.executeQuery()) {
 
-            List<Screening> screenings = new ArrayList<>();
+                List<Screening> screenings = new ArrayList<>();
 
-            while (resultSet.next()) {
-                screenings.add(mapScreening(resultSet));
+                while (resultSet.next()) {
+                    screenings.add(mapScreening(resultSet));
+                }
+
+                return List.copyOf(screenings);
             }
-
-            return List.copyOf(screenings);
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to retrieve screenings", exception);
-        }
+        });
     }
 
     // Retrieves all screenings associated with the specified film.
@@ -145,26 +153,24 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 ORDER BY s.screening_time, s.screening_id
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        return withConnection(
+                "Failed to retrieve screenings for film " + filmId,
+                connection -> {
+                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                        statement.setLong(1, filmId);
 
-            statement.setLong(1, filmId);
+                        try (ResultSet resultSet = statement.executeQuery()) {
+                            List<Screening> screenings = new ArrayList<>();
 
-            try (ResultSet resultSet = statement.executeQuery()) {
-                List<Screening> screenings = new ArrayList<>();
+                            while (resultSet.next()) {
+                                screenings.add(mapScreening(resultSet));
+                            }
 
-                while (resultSet.next()) {
-                    screenings.add(mapScreening(resultSet));
+                            return List.copyOf(screenings);
+                        }
+                    }
                 }
-
-                return List.copyOf(screenings);
-            }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException(
-                    "Failed to retrieve screenings for film " + filmId, exception
-            );
-        }
+        );
     }
 
     // Retrieves all screenings held at the specified venue.
@@ -179,26 +185,24 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 ORDER BY s.screening_time, s.screening_id
                 """;
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        return withConnection(
+                "Failed to retrieve screenings for venue " + venue,
+                connection -> {
+                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                        statement.setString(1, venue);
 
-            statement.setString(1, venue);
+                        try (ResultSet resultSet = statement.executeQuery()) {
+                            List<Screening> screenings = new ArrayList<>();
 
-            try (ResultSet resultSet = statement.executeQuery()) {
-                List<Screening> screenings = new ArrayList<>();
+                            while (resultSet.next()) {
+                                screenings.add(mapScreening(resultSet));
+                            }
 
-                while (resultSet.next()) {
-                    screenings.add(mapScreening(resultSet));
+                            return List.copyOf(screenings);
+                        }
+                    }
                 }
-
-                return List.copyOf(screenings);
-            }
-
-        } catch (SQLException exception) {
-            throw new RepositoryException(
-                    "Failed to retrieve screenings for venue " + venue, exception
-            );
-        }
+        );
     }
 
     // Updates an existing screening.
@@ -213,44 +217,45 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
             throw new RepositoryException("Screening film ID must not be null");
         }
 
-        String sql = """
-            UPDATE screenings
-            SET film_id = ?, venue = ?, screening_time = ?
-            WHERE screening_id = ?
-            """;
+        return transactionManager.executeInTransaction(connection -> {
+            String sql = """
+                    UPDATE screenings
+                    SET film_id = ?, venue = ?, screening_time = ?
+                    WHERE screening_id = ?
+                    """;
 
-        try (Connection connection = databaseManager.getConnection()) {
+            try {
+                if (!screeningExists(connection, screeningId)) {
+                    throw new ScreeningNotFoundException(screeningId);
+                }
 
-            if (!screeningExists(connection, screeningId)) {
-                throw new ScreeningNotFoundException(screeningId);
-            }
+                try (PreparedStatement filmStatement = connection.prepareStatement(
+                        "SELECT EXISTS (SELECT 1 FROM films WHERE film_id = ?)")) {
 
-            try (PreparedStatement filmStatement = connection.prepareStatement(
-                    "SELECT EXISTS (SELECT 1 FROM films WHERE film_id = ?)")) {
+                    filmStatement.setLong(1, screening.filmId());
 
-                filmStatement.setLong(1, screening.filmId());
-
-                try (ResultSet resultSet = filmStatement.executeQuery()) {
-                    if (resultSet.getBoolean(1) == false) {
-                        throw new FilmNotFoundException(screening.filmId());
+                    try (ResultSet resultSet = filmStatement.executeQuery()) {
+                        if (!resultSet.getBoolean(1)) {
+                            throw new FilmNotFoundException(screening.filmId());
+                        }
                     }
                 }
+
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    statement.setLong(1, screening.filmId());
+                    statement.setString(2, screening.venue());
+                    statement.setString(3, screening.screeningTime());
+                    statement.setLong(4, screeningId);
+
+                    statement.executeUpdate();
+                }
+
+                return findScreeningById(connection, screeningId);
+
+            } catch (SQLException exception) {
+                throw new RepositoryException("Failed to update screening", exception);
             }
-
-            try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                statement.setLong(1, screening.filmId());
-                statement.setString(2, screening.venue());
-                statement.setString(3, screening.screeningTime());
-                statement.setLong(4, screeningId);
-
-                statement.executeUpdate();
-            }
-
-            return findScreeningById(connection, screeningId);
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to update screening", exception);
-        }
+        });
     }
 
     // Deletes a screening by its ID.
@@ -258,15 +263,12 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
     public boolean deleteScreeningById(long screeningId) {
         String sql = "DELETE FROM screenings WHERE screening_id = ?";
 
-        try (Connection connection = databaseManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-
-            statement.setLong(1, screeningId);
-            return statement.executeUpdate() > 0;
-
-        } catch (SQLException exception) {
-            throw new RepositoryException("Failed to delete screening", exception);
-        }
+        return withConnection("Failed to delete screening", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setLong(1, screeningId);
+                return statement.executeUpdate() > 0;
+            }
+        });
     }
 
     // Retrieves a screening using an existing database connection.
@@ -274,12 +276,12 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
             throws SQLException {
 
         String sql = """
-            SELECT s.screening_id, s.film_id, f.title AS film_title,
-                   s.venue, s.screening_time
-            FROM screenings s
-            JOIN films f ON f.film_id = s.film_id
-            WHERE s.screening_id = ?
-            """;
+                SELECT s.screening_id, s.film_id, f.title AS film_title,
+                       s.venue, s.screening_time
+                FROM screenings s
+                JOIN films f ON f.film_id = s.film_id
+                WHERE s.screening_id = ?
+                """;
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, screeningId);
@@ -295,7 +297,9 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
     }
 
     // Checks whether a screening with the specified ID exists.
-    private boolean screeningExists(Connection connection, long screeningId) throws SQLException {
+    private boolean screeningExists(Connection connection, long screeningId)
+            throws SQLException {
+
         String sql = """
                 SELECT EXISTS (
                     SELECT 1
@@ -323,5 +327,19 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 resultSet.getString("screening_time")
         );
     }
-}
 
+    // Executes a standalone database operation and closes its connection afterward.
+    // Converts JDBC failures into the repository's unchecked exception hierarchy.
+    private <T> T withConnection(String errorMessage, SqlFunction<T> operation) {
+        try (Connection connection = connectionProvider.getConnection()) {
+            return operation.apply(connection);
+        } catch (SQLException exception) {
+            throw new RepositoryException(errorMessage, exception);
+        }
+    }
+
+    @FunctionalInterface
+    private interface SqlFunction<T> {
+        T apply(Connection connection) throws SQLException;
+    }
+}
