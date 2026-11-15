@@ -1,6 +1,7 @@
 package com.marquee.repository;
 
-import com.marquee.db.DatabaseManager;
+import com.marquee.db.transactions.ConnectionProvider;
+import com.marquee.db.transactions.TransactionManager;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.RepositoryException;
@@ -22,14 +23,23 @@ import java.util.Optional;
 
 public final class SqliteFilmRepository implements FilmRepository {
 
-    private final DatabaseManager databaseManager;
+    private final ConnectionProvider connectionProvider;
+    private final TransactionManager transactionManager;
 
-    public SqliteFilmRepository(DatabaseManager databaseManager) {
-        if (databaseManager == null) {
-            throw new RepositoryException("Database manager must not be null");
+    // Creates a film repository using the connection provider and transaction manager.
+    public SqliteFilmRepository(
+            ConnectionProvider connectionProvider,
+            TransactionManager transactionManager) {
+        if (connectionProvider == null) {
+            throw new RepositoryException("Connection provider must not be null");
         }
 
-        this.databaseManager = databaseManager;
+        if (transactionManager == null) {
+            throw new RepositoryException("Transaction manager must not be null");
+        }
+
+        this.connectionProvider = connectionProvider;
+        this.transactionManager = transactionManager;
     }
 
     // Creates a film and associates its existing genres within one transaction.
@@ -40,7 +50,7 @@ public final class SqliteFilmRepository implements FilmRepository {
             throw new RepositoryException("Film must not be null");
         }
 
-        return inTransaction(connection -> {
+        return transactionManager.executeInTransaction(connection -> {
             String sql = """
                     INSERT INTO films (title, year, description)
                     VALUES (?, ?, ?)
@@ -90,10 +100,12 @@ public final class SqliteFilmRepository implements FilmRepository {
     @Override
     public Page<Film> findAllFilms(int page, int perPage) {
         if (page < 1 || perPage < 1) {
-            throw new RepositoryException("Page and perPage must both be greater than zero");
+            throw new RepositoryException(
+                    "Page and perPage must both be greater than zero"
+            );
         }
 
-        return inTransaction(connection -> {
+        return transactionManager.executeInTransaction(connection -> {
             long total = countFilms(connection);
             List<Film> films = findPage(connection, page, perPage);
 
@@ -109,7 +121,7 @@ public final class SqliteFilmRepository implements FilmRepository {
             throw new RepositoryException("Film must not be null");
         }
 
-        return inTransaction(connection -> {
+        return transactionManager.executeInTransaction(connection -> {
             String sql = """
                     UPDATE films
                     SET title = ?, year = ?, description = ?
@@ -141,7 +153,9 @@ public final class SqliteFilmRepository implements FilmRepository {
 
             return findById(connection, filmId)
                     .orElseThrow(() ->
-                            new RepositoryException("Updated film could not be retrieved: " + filmId));
+                            new RepositoryException(
+                                    "Updated film could not be retrieved: " + filmId
+                            ));
         });
     }
 
@@ -315,8 +329,7 @@ public final class SqliteFilmRepository implements FilmRepository {
     private void replaceGenres(
             Connection connection,
             long filmId,
-            List<Genre> genres
-    ) throws SQLException {
+            List<Genre> genres) throws SQLException {
 
         String deleteSql = "DELETE FROM film_genres WHERE film_id = ?";
 
@@ -331,38 +344,10 @@ public final class SqliteFilmRepository implements FilmRepository {
     // Executes a standalone database operation and closes its connection afterward.
     // Converts JDBC failures into the repository's unchecked exception hierarchy.
     private <T> T withConnection(SqlFunction<T> operation) {
-        try (Connection connection = databaseManager.getConnection()) {
+        try (Connection connection = connectionProvider.getConnection()) {
             return operation.apply(connection);
         } catch (SQLException exception) {
-            throw new RepositoryException(
-                    "Database operation failed", exception
-            );
-        }
-    }
-
-    // Executes related database operations atomically using one connection.
-    // Rolls back on failure and preserves any rollback failure as a suppressed exception.
-    private <T> T inTransaction(SqlFunction<T> operation) {
-        try (Connection connection = databaseManager.getConnection()) {
-            connection.setAutoCommit(false);
-
-            try {
-                T result = operation.apply(connection);
-                connection.commit();
-                return result;
-            } catch (SQLException | RuntimeException | Error exception) {
-                try {
-                    connection.rollback();
-                } catch (SQLException rollbackException) {
-                    exception.addSuppressed(rollbackException);
-                }
-
-                throw exception;
-            }
-        } catch (SQLException exception) {
-            throw new RepositoryException(
-                    "Database transaction failed", exception
-            );
+            throw new RepositoryException("Database operation failed", exception);
         }
     }
 

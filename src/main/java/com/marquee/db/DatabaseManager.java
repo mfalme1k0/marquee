@@ -1,5 +1,7 @@
 package com.marquee.db;
 
+import com.marquee.db.transactions.ConnectionProvider;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -8,9 +10,9 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 
-public final class DatabaseManager {
+public final class DatabaseManager implements ConnectionProvider {
 
-    // Environment variable used to override the default database location which is the root folder.
+    // Environment variable used to override the default database location.
     private static final String DATABASE_PATH_ENV = "MARQUEE_DB_PATH";
 
     // Default database file location: project working directory.
@@ -38,6 +40,7 @@ public final class DatabaseManager {
     }
 
     // Opens a database connection and enables foreign-key enforcement.
+    @Override
     public Connection getConnection() throws SQLException {
         Connection connection = DriverManager.getConnection(jdbcUrl);
 
@@ -46,6 +49,7 @@ public final class DatabaseManager {
 
             // Waits up to 5 seconds when another connection holds a database lock.
             statement.execute("PRAGMA busy_timeout = 5000");
+
             return connection;
         } catch (SQLException exception) {
             try {
