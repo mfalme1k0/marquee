@@ -423,6 +423,8 @@ class SqliteScreeningRepositoryTest {
         );
     }
 
+
+
     @Test
     void shouldThrowRepositoryExceptionWhenCreatingScreeningWithNullFilmId() {
         assertThrows(
