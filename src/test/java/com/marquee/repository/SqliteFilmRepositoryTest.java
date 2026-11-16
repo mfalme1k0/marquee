@@ -14,12 +14,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
+import java.lang.reflect.Method;
+import java.sql.PreparedStatement;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -31,6 +37,8 @@ class SqliteFilmRepositoryTest {
     private DatabaseManager databaseManager;
     private FilmRepository filmRepository;
     private GenreRepository genreRepository;
+    private ConnectionProvider connectionProvider;
+    private TransactionManager transactionManager;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -51,10 +59,9 @@ class SqliteFilmRepositoryTest {
             statement.executeUpdate("DELETE FROM genres");
         }
 
-        ConnectionProvider connectionProvider = databaseManager;
+        connectionProvider = databaseManager;
 
-        TransactionManager transactionManager =
-                new TransactionManager(connectionProvider);
+        transactionManager = new TransactionManager(connectionProvider);
 
         filmRepository = new SqliteFilmRepository(
                 connectionProvider,
@@ -65,6 +72,153 @@ class SqliteFilmRepositoryTest {
                 connectionProvider,
                 transactionManager
         );
+    }
+
+    @Test
+    void shouldWrapSQLExceptionWhenConnectionProviderFails() {
+        ConnectionProvider failingConnectionProvider = () -> {
+            throw new SQLException("Simulated connection failure");
+        };
+
+        FilmRepository repository = new SqliteFilmRepository(
+                failingConnectionProvider,
+                new TransactionManager(connectionProvider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findFilmById(1L)
+        );
+
+        assertEquals("Database operation failed", exception.getMessage());
+        assertInstanceOf(SQLException.class, exception.getCause());
+    }
+
+    @Test
+    void shouldWrapSQLExceptionWhenDatabaseOperationFails() throws SQLException {
+        ConnectionProvider failingConnectionProvider = () -> {
+            Connection connection = connectionProvider.getConnection();
+
+            return (Connection) Proxy.newProxyInstance(
+                    Connection.class.getClassLoader(),
+                    new Class<?>[]{Connection.class},
+                    (proxy, method, args) -> {
+                        if (method.getName().equals("prepareStatement")) {
+                            throw new SQLException("Simulated query failure");
+                        }
+
+                        try {
+                            return method.invoke(connection, args);
+                        } catch (InvocationTargetException exception) {
+                            throw exception.getCause();
+                        }
+                    }
+            );
+        };
+
+        FilmRepository repository = new SqliteFilmRepository(
+                failingConnectionProvider,
+                new TransactionManager(connectionProvider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findFilmById(1L)
+        );
+
+        assertEquals("Database operation failed", exception.getMessage());
+        assertInstanceOf(SQLException.class, exception.getCause());
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenCreatedFilmCannotBeRetrieved() throws Exception {
+        ConnectionProvider failingLookupProvider = connectionProviderWithEmptyFilmLookups();
+
+        FilmRepository repository = new SqliteFilmRepository(
+                failingLookupProvider,
+                new TransactionManager(failingLookupProvider)
+        );
+
+        Film film = new Film(
+                null,
+                "Test Film",
+                2026,
+                "Description",
+                null,
+                List.of()
+        );
+
+        assertThrows(
+                RepositoryException.class,
+                () -> repository.createFilm(film)
+        );
+
+        // The transaction should roll back the film insertion.
+        assertEquals(0, countFilms());
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenUpdatedFilmCannotBeRetrieved() throws Exception {
+        Film existingFilm = createFilm("Original Film", 2020);
+
+        ConnectionProvider failingLookupProvider = connectionProviderWithEmptyFilmLookups();
+
+        FilmRepository repository = new SqliteFilmRepository(
+                failingLookupProvider,
+                new TransactionManager(failingLookupProvider)
+        );
+
+        Film updatedFilm = new Film(
+                null,
+                "Updated Film",
+                2026,
+                "Updated description",
+                null,
+                List.of()
+        );
+
+        assertThrows(
+                RepositoryException.class,
+                () -> repository.updateFilm(existingFilm.filmId(), updatedFilm)
+        );
+
+        // The transaction should roll back the update.
+        Film persistedFilm = filmRepository.findFilmById(existingFilm.filmId())
+                .orElseThrow();
+
+        assertEquals("Original Film", persistedFilm.title());
+        assertEquals(2020, persistedFilm.year());
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenGenreElementIsNull() throws Exception {
+        Method insertGenres = SqliteFilmRepository.class.getDeclaredMethod(
+                "insertGenres",
+                Connection.class,
+                long.class,
+                List.class
+        );
+
+        insertGenres.setAccessible(true);
+
+        try (Connection connection = databaseManager.getConnection()) {
+            InvocationTargetException exception = assertThrows(
+                    InvocationTargetException.class,
+                    () -> insertGenres.invoke(
+                            filmRepository,
+                            connection,
+                            1L,
+                            Collections.singletonList(null)
+                    )
+            );
+
+            assertInstanceOf(RepositoryException.class, exception.getCause());
+
+            assertEquals(
+                    "Every film genre must have a persisted genre ID",
+                    exception.getCause().getMessage()
+            );
+        }
     }
 
     @Test
@@ -486,5 +640,88 @@ class SqliteFilmRepositoryTest {
             assertTrue(resultSet.next());
             return resultSet.getInt(1);
         }
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenConnectionProviderIsNull() {
+        assertThrows(
+                RepositoryException.class,
+                () -> new SqliteFilmRepository(null, transactionManager)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenTransactionManagerIsNull() {
+        assertThrows(
+                RepositoryException.class,
+                () -> new SqliteFilmRepository(connectionProvider, null)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenCreatingFilmWithGenreWithoutId() throws Exception {
+        Film film = new Film(
+                null,
+                "Test Film",
+                2026,
+                "Description",
+                null,
+                List.of(new Genre(null, "Action"))
+        );
+
+        assertThrows(
+                RepositoryException.class,
+                () -> filmRepository.createFilm(film)
+        );
+
+        assertEquals(0, countFilms());
+    }
+
+    private ConnectionProvider connectionProviderWithEmptyFilmLookups() {
+        return () -> {
+            Connection connection = databaseManager.getConnection();
+
+            return (Connection) Proxy.newProxyInstance(
+                    Connection.class.getClassLoader(),
+                    new Class<?>[]{Connection.class},
+                    (proxy, method, args) -> {
+                        if (method.getName().equals("prepareStatement")
+                                && args != null
+                                && args.length > 0
+                                && args[0] instanceof String sql
+                                && sql.stripLeading().startsWith("SELECT f.film_id")) {
+
+                            PreparedStatement statement =
+                                    connection.prepareStatement(sql);
+
+                            return Proxy.newProxyInstance(
+                                    PreparedStatement.class.getClassLoader(),
+                                    new Class<?>[]{PreparedStatement.class},
+                                    (statementProxy, statementMethod, statementArgs) -> {
+                                        if (statementMethod.getName().equals("executeQuery")) {
+                                            return connection.createStatement()
+                                                    .executeQuery("SELECT 1 WHERE 0");
+                                        }
+
+                                        try {
+                                            return statementMethod.invoke(
+                                                    statement,
+                                                    statementArgs
+                                            );
+                                        } catch (InvocationTargetException exception) {
+                                            throw exception.getCause();
+                                        }
+                                    }
+                            );
+                        }
+
+                        try {
+                            return method.invoke(connection, args);
+                        } catch (InvocationTargetException exception) {
+                            throw exception.getCause();
+                        }
+                    }
+            );
+        };
     }
 }

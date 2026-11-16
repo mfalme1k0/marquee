@@ -23,7 +23,6 @@ public final class TransactionManager {
     // Executes an operation within a database transaction.
     // If the operation fails, the transaction is rolled back before the original exception or error is propagated.
     // @param callback the operation to execute within the transaction
-    // throws RepositoryException if a database transaction fails
     public <T> T executeInTransaction(TransactionCallback<T> callback) {
         if (callback == null) {
             throw new RepositoryException("Transaction callback must not be null");
@@ -66,7 +65,6 @@ public final class TransactionManager {
 
         // Executes the operation using the supplied database connection.
         // @param connection the connection belonging to the current transaction.
-        // Throws SQLException if a database operation fails.
         T execute(Connection connection) throws SQLException;
     }
 }
