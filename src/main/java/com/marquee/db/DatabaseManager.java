@@ -22,21 +22,20 @@ public final class DatabaseManager implements ConnectionProvider {
 
     // Resolves the database path and creates its parent directory if necessary.
     public DatabaseManager() throws IOException {
-        String configuredPath = System.getenv(DATABASE_PATH_ENV);
+        this(resolveDatabasePath());
+    }
 
-        Path databasePath = Path.of(
-                configuredPath == null || configuredPath.isBlank()
-                        ? DEFAULT_DATABASE_PATH
-                        : configuredPath
-        ).toAbsolutePath();
+    // Creates a database manager using the specified database file path.
+    public DatabaseManager(Path databasePath) throws IOException {
+        Path absolutePath = databasePath.toAbsolutePath();
 
-        Path parentDirectory = databasePath.getParent();
+        Path parentDirectory = absolutePath.getParent();
 
         if (parentDirectory != null) {
             Files.createDirectories(parentDirectory);
         }
 
-        this.jdbcUrl = "jdbc:sqlite:" + databasePath;
+        this.jdbcUrl = "jdbc:sqlite:" + absolutePath;
     }
 
     // Opens a database connection and enables foreign-key enforcement.
@@ -60,5 +59,16 @@ public final class DatabaseManager implements ConnectionProvider {
 
             throw exception;
         }
+    }
+
+    // Resolves the database path from the environment variable or default location.
+    private static Path resolveDatabasePath() {
+        String configuredPath = System.getenv(DATABASE_PATH_ENV);
+
+        return Path.of(
+                configuredPath == null || configuredPath.isBlank()
+                        ? DEFAULT_DATABASE_PATH
+                        : configuredPath
+        );
     }
 }
