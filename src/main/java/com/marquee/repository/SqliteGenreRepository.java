@@ -6,6 +6,8 @@ import com.marquee.exceptions.DuplicateGenreException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.RepositoryException;
 import com.marquee.model.Genre;
+import org.sqlite.SQLiteErrorCode;
+import org.sqlite.SQLiteException;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -198,7 +200,9 @@ public final class SqliteGenreRepository implements GenreRepository {
 
     // Checks whether the SQL exception represents a unique-constraint violation.
     private boolean isUniqueConstraintViolation(SQLException exception) {
-        return exception.getErrorCode() == 2067;
+        return exception instanceof SQLiteException sqliteException
+                && sqliteException.getResultCode()
+                == SQLiteErrorCode.SQLITE_CONSTRAINT_UNIQUE;
     }
 
     // Maps the current result-set row to a Genre record.
