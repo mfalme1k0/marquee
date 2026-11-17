@@ -13,11 +13,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,18 +53,16 @@ class SqliteScreeningRepositoryTest {
             statement.executeUpdate("DELETE FROM genres");
         }
 
-        ConnectionProvider connectionProvider = databaseManager;
-
         TransactionManager transactionManager =
-                new TransactionManager(connectionProvider);
+                new TransactionManager(databaseManager);
 
         screeningRepository = new SqliteScreeningRepository(
-                connectionProvider,
+                databaseManager,
                 transactionManager
         );
 
         filmRepository = new SqliteFilmRepository(
-                connectionProvider,
+                databaseManager,
                 transactionManager
         );
     }
@@ -91,6 +90,77 @@ class SqliteScreeningRepositoryTest {
     }
 
     @Test
+    void shouldThrowRepositoryExceptionWhenGeneratedScreeningIdCannotBeRetrieved()
+            throws SQLException {
+
+        ConnectionProvider provider = connectionProvider(
+                "SELECT last_insert_rowid()",
+                true,
+                ResourceToFail.NONE
+        );
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        Film film = createFilm("Test Film");
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.createScreening(
+                        new Screening(
+                                null,
+                                film.filmId(),
+                                null,
+                                "Test Cinema",
+                                "2026-12-01T18:00:00"
+                        )
+                )
+        );
+
+        assertEquals(
+                "Failed to retrieve the generated screening ID",
+                exception.getMessage()
+        );
+
+        assertEquals(0, countScreenings());
+    }
+
+    @Test
+    void shouldThrowScreeningNotFoundExceptionWhenCreatedScreeningCannotBeRetrieved()
+            throws SQLException {
+
+        ConnectionProvider provider = connectionProvider(
+                "FROM screenings s",
+                true,
+                ResourceToFail.NONE
+        );
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        Film film = createFilm("Test Film");
+
+        assertThrows(
+                ScreeningNotFoundException.class,
+                () -> repository.createScreening(
+                        new Screening(
+                                null,
+                                film.filmId(),
+                                null,
+                                "Test Cinema",
+                                "2026-12-01T18:00:00"
+                        )
+                )
+        );
+
+        assertEquals(0, countScreenings());
+    }
+
+    @Test
     void shouldFindScreeningById() {
         Screening createdScreening = createScreening(
                 "Test Film",
@@ -113,6 +183,143 @@ class SqliteScreeningRepositoryTest {
                 screeningRepository.findScreeningById(-1L);
 
         assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenCreatingScreeningFailsWithSQLException() throws SQLException {
+        Film film = createFilm("Test Film");
+
+        ConnectionProvider provider =
+                connectionProviderThrowingSQLException("INSERT INTO screenings");
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.createScreening(
+                        new Screening(
+                                null,
+                                film.filmId(),
+                                null,
+                                "Test Cinema",
+                                "2026-12-01T18:00:00"
+                        )
+                )
+        );
+
+        assertEquals("Failed to create screening", exception.getMessage());
+        assertInstanceOf(SQLException.class, exception.getCause());
+        assertEquals(0, countScreenings());
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenUpdatingScreeningFailsWithSQLException() {
+        Screening createdScreening = createScreening(
+                "Test Film",
+                "Test Cinema",
+                "2026-12-01T18:00:00"
+        );
+
+        Film replacementFilm = createFilm("Replacement Film");
+
+        ConnectionProvider provider =
+                connectionProviderThrowingSQLException("UPDATE screenings");
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.updateScreening(
+                        createdScreening.screeningId(),
+                        new Screening(
+                                null,
+                                replacementFilm.filmId(),
+                                null,
+                                "Updated Cinema",
+                                "2026-12-05T20:00:00"
+                        )
+                )
+        );
+
+        assertEquals("Failed to update screening", exception.getMessage());
+        assertInstanceOf(SQLException.class, exception.getCause());
+
+        Screening persistedScreening =
+                screeningRepository.findScreeningById(
+                        createdScreening.screeningId()
+                ).orElseThrow();
+
+        assertEquals(createdScreening, persistedScreening);
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenResultSetCloseFails() {
+        Screening createdScreening = createScreening(
+                "Test Film",
+                "Test Cinema",
+                "2026-12-01T18:00:00"
+        );
+
+        ConnectionProvider provider = connectionProvider(
+                "FROM screenings s",
+                false,
+                ResourceToFail.RESULT_SET
+        );
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findScreeningById(
+                        createdScreening.screeningId()
+                )
+        );
+
+        assertEquals(
+                "Failed to retrieve screening",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenPreparedStatementCloseFails() {
+        Screening createdScreening = createScreening(
+                "Test Film",
+                "Test Cinema",
+                "2026-12-01T18:00:00"
+        );
+
+        ConnectionProvider provider = connectionProvider(
+                "FROM screenings s",
+                false,
+                ResourceToFail.STATEMENT
+        );
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findScreeningById(
+                        createdScreening.screeningId()
+                )
+        );
+
+        assertEquals(
+                "Failed to retrieve screening",
+                exception.getMessage()
+        );
     }
 
     @Test
@@ -342,7 +549,9 @@ class SqliteScreeningRepositoryTest {
     }
 
     @Test
-    void shouldThrowFilmNotFoundExceptionWhenCreatingScreeningWithNonexistentFilm() throws SQLException {
+    void shouldThrowFilmNotFoundExceptionWhenCreatingScreeningWithNonexistentFilm()
+            throws SQLException {
+
         assertThrows(
                 FilmNotFoundException.class,
                 () -> screeningRepository.createScreening(
@@ -423,7 +632,34 @@ class SqliteScreeningRepositoryTest {
         );
     }
 
+    @Test
+    void shouldThrowRepositoryExceptionWhenConnectionProviderIsNull() {
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> new SqliteScreeningRepository(
+                        null,
+                        new TransactionManager(databaseManager)
+                )
+        );
 
+        assertEquals(
+                "Connection provider must not be null",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenTransactionManagerIsNull() {
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> new SqliteScreeningRepository(databaseManager, null)
+        );
+
+        assertEquals(
+                "Transaction manager must not be null",
+                exception.getMessage()
+        );
+    }
 
     @Test
     void shouldThrowRepositoryExceptionWhenCreatingScreeningWithNullFilmId() {
@@ -519,5 +755,166 @@ class SqliteScreeningRepositoryTest {
             assertTrue(resultSet.next());
             return resultSet.getInt(1);
         }
+    }
+
+    private ConnectionProvider connectionProvider(
+            String sqlFragment,
+            boolean emptyResultSet,
+            ResourceToFail resourceToFail) {
+
+        return () -> {
+            Connection connection = databaseManager.getConnection();
+
+            return createProxy(
+                    Connection.class,
+                    (proxy, method, args) -> {
+                        Object result = invokeDelegate(
+                                connection,
+                                method,
+                                args
+                        );
+
+                        if (method.getName().equals("prepareStatement")
+                                && result instanceof PreparedStatement statement
+                                && ((String) args[0]).contains(sqlFragment)) {
+
+                            return wrapPreparedStatement(
+                                    statement,
+                                    emptyResultSet,
+                                    resourceToFail
+                            );
+                        }
+
+                        return result;
+                    }
+            );
+        };
+    }
+
+    private PreparedStatement wrapPreparedStatement(
+            PreparedStatement statement,
+            boolean emptyResultSet,
+            ResourceToFail resourceToFail) {
+
+        return createProxy(
+                PreparedStatement.class,
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("close")
+                            && resourceToFail == ResourceToFail.STATEMENT) {
+
+                        invokeDelegate(statement, method, args);
+
+                        throw new SQLException(
+                                "Simulated PreparedStatement close failure"
+                        );
+                    }
+
+                    Object result = invokeDelegate(
+                            statement,
+                            method,
+                            args
+                    );
+
+                    if (method.getName().equals("executeQuery")
+                            && result instanceof ResultSet resultSet) {
+
+                        return wrapResultSet(
+                                resultSet,
+                                emptyResultSet,
+                                resourceToFail
+                        );
+                    }
+
+                    return result;
+                }
+        );
+    }
+
+    private ResultSet wrapResultSet(
+            ResultSet resultSet,
+            boolean emptyResultSet,
+            ResourceToFail resourceToFail) {
+
+        return createProxy(
+                ResultSet.class,
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("next") && emptyResultSet) {
+                        return false;
+                    }
+
+                    if (method.getName().equals("close")
+                            && resourceToFail == ResourceToFail.RESULT_SET) {
+
+                        invokeDelegate(resultSet, method, args);
+
+                        throw new SQLException(
+                                "Simulated ResultSet close failure"
+                        );
+                    }
+
+                    return invokeDelegate(resultSet, method, args);
+                }
+        );
+    }
+
+    private <T> T createProxy(
+            Class<T> interfaceType,
+            InvocationHandler handler) {
+
+        return interfaceType.cast(
+                Proxy.newProxyInstance(
+                        interfaceType.getClassLoader(),
+                        new Class<?>[]{interfaceType},
+                        handler
+                )
+        );
+    }
+
+    private Object invokeDelegate(
+            Object target,
+            Method method,
+            Object[] args) throws Throwable {
+
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException exception) {
+            throw exception.getCause();
+        }
+    }
+
+    private enum ResourceToFail {
+        NONE,
+        RESULT_SET,
+        STATEMENT
+    }
+
+    private ConnectionProvider connectionProviderThrowingSQLException(
+            String sqlFragment) {
+
+        return () -> {
+            Connection connection = databaseManager.getConnection();
+
+            return createProxy(
+                    Connection.class,
+                    (proxy, method, args) -> {
+
+                        if (method.getName().equals("prepareStatement")
+                                && ((String) args[0]).contains(sqlFragment)) {
+
+                            throw new SQLException(
+                                    "Simulated SQL failure"
+                            );
+                        }
+
+                        return invokeDelegate(
+                                connection,
+                                method,
+                                args
+                        );
+                    }
+            );
+        };
     }
 }
