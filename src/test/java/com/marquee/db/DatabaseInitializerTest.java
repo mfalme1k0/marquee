@@ -4,6 +4,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -104,6 +106,84 @@ class DatabaseInitializerTest {
         ));
     }
 
+    @Test
+    void shouldThrowIOExceptionWhenSqlResourceDoesNotExist() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> databaseInitializer.loadSqlScript(
+                        "missing-test-resource.sql"
+                )
+        );
+
+        assertEquals(
+                "SQL resource not found: missing-test-resource.sql",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void shouldRollbackTransactionWhenSchemaExecutionFails()
+            throws Exception {
+
+        SQLException executionException =
+                new SQLException("Schema execution failed");
+
+        boolean[] rollbackCalled = {false};
+
+        DatabaseManager failingDatabaseManager =
+                createFailingDatabaseManager(
+                        executionException,
+                        null,
+                        rollbackCalled
+                );
+
+        DatabaseInitializer initializer =
+                new DatabaseInitializer(failingDatabaseManager);
+
+        SQLException thrownException = assertThrows(
+                SQLException.class,
+                initializer::initialize
+        );
+
+        assertSame(executionException, thrownException);
+        assertTrue(rollbackCalled[0]);
+        assertEquals(0, thrownException.getSuppressed().length);
+    }
+
+    @Test
+    void shouldSuppressRollbackFailureWhenInitializationFails()
+            throws Exception {
+
+        SQLException executionException =
+                new SQLException("Schema execution failed");
+
+        SQLException rollbackException =
+                new SQLException("Rollback failed");
+
+        boolean[] rollbackCalled = {false};
+
+        DatabaseManager failingDatabaseManager =
+                createFailingDatabaseManager(
+                        executionException,
+                        rollbackException,
+                        rollbackCalled
+                );
+
+        DatabaseInitializer initializer =
+                new DatabaseInitializer(failingDatabaseManager);
+
+        SQLException thrownException = assertThrows(
+                SQLException.class,
+                initializer::initialize
+        );
+
+        assertSame(executionException, thrownException);
+        assertTrue(rollbackCalled[0]);
+
+        assertEquals(1, thrownException.getSuppressed().length);
+        assertSame(rollbackException, thrownException.getSuppressed()[0]);
+    }
+
     private boolean tableExists(String tableName) throws SQLException {
         String sql = """
                 SELECT EXISTS (
@@ -171,5 +251,76 @@ class DatabaseInitializerTest {
 
             return resultSet.getInt(1);
         }
+    }
+
+    private DatabaseManager createFailingDatabaseManager(
+            SQLException executionException,
+            SQLException rollbackException,
+            boolean[] rollbackCalled
+    ) throws Exception {
+
+        ResultSet resultSet = (ResultSet) Proxy.newProxyInstance(
+                ResultSet.class.getClassLoader(),
+                new Class<?>[]{ResultSet.class},
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("getBoolean")) {
+                        return false;
+                    }
+
+                    return null;
+                }
+        );
+
+        Statement statement = (Statement) Proxy.newProxyInstance(
+                Statement.class.getClassLoader(),
+                new Class<?>[]{Statement.class},
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("executeQuery")) {
+                        return resultSet;
+                    }
+
+                    if (method.getName().equals("execute")) {
+                        String sql = (String) args[0];
+
+                        if (!sql.startsWith("PRAGMA")) {
+                            throw executionException;
+                        }
+
+                        return false;
+                    }
+
+                    return null;
+                }
+        );
+
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("createStatement")) {
+                        return statement;
+                    }
+
+                    if (method.getName().equals("rollback")) {
+                        rollbackCalled[0] = true;
+
+                        if (rollbackException != null) {
+                            throw rollbackException;
+                        }
+
+                        return null;
+                    }
+
+                    return null;
+                }
+        );
+
+        return new DatabaseManager(
+                tempDir.resolve("failing.db"),
+                jdbcUrl -> connection
+        );
     }
 }

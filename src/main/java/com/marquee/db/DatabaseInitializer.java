@@ -51,7 +51,7 @@ public final class DatabaseInitializer {
     }
 
     // Reads the specified SQL resource (e.g., schema.sql or seed.sql) and returns its contents as a string.
-    private String loadSqlScript(String resourceName) throws IOException {
+    String loadSqlScript(String resourceName) throws IOException {
         try (InputStream inputStream = getClass()
                 .getClassLoader()
                 .getResourceAsStream(resourceName)) {
