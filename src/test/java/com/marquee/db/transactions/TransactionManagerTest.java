@@ -4,6 +4,7 @@ import com.marquee.exceptions.RepositoryException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -64,6 +65,77 @@ class TransactionManagerTest {
         );
 
         assertEquals(0, countRecords(databasePath));
+    }
+
+    @Test
+    void shouldAttachRollbackExceptionAsSuppressedWhenRollbackFails() {
+        SQLException originalException =
+                new SQLException("Simulated transaction failure");
+
+        SQLException rollbackException =
+                new SQLException("Simulated rollback failure");
+
+        Connection connection = (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("rollback")) {
+                        throw rollbackException;
+                    }
+
+                    return null;
+                }
+        );
+
+        ConnectionProvider connectionProvider = () -> connection;
+
+        TransactionManager transactionManager =
+                new TransactionManager(connectionProvider);
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> transactionManager.executeInTransaction(ignored -> {
+                    throw originalException;
+                })
+        );
+
+        assertSame(originalException, exception.getCause());
+
+        assertEquals(1, originalException.getSuppressed().length);
+
+        assertSame(
+                rollbackException,
+                originalException.getSuppressed()[0]
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenConnectionProviderIsNull() {
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> new TransactionManager(null)
+        );
+
+        assertEquals(
+                "Connection provider must not be null",
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenTransactionCallbackIsNull() {
+        TransactionManager transactionManager =
+                createTransactionManager(tempDir.resolve("transactions.db"));
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> transactionManager.executeInTransaction(null)
+        );
+
+        assertEquals(
+                "Transaction callback must not be null",
+                exception.getMessage()
+        );
     }
 
     @Test
