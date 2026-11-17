@@ -1,5 +1,7 @@
 target/
 *.db
+*.txt
+*.log
 *.db-journal
 .idea/
 *.iml
