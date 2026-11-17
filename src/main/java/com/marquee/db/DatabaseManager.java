@@ -19,6 +19,12 @@ public final class DatabaseManager implements ConnectionProvider {
     private static final String DEFAULT_DATABASE_PATH = "marquee.db";
 
     private final String jdbcUrl;
+    private final ConnectionFactory connectionFactory;
+
+    @FunctionalInterface
+    interface ConnectionFactory {
+        Connection open(String jdbcUrl) throws SQLException;
+    }
 
     // Resolves the database path and creates its parent directory if necessary.
     public DatabaseManager() throws IOException {
@@ -27,6 +33,15 @@ public final class DatabaseManager implements ConnectionProvider {
 
     // Creates a database manager using the specified database file path.
     public DatabaseManager(Path databasePath) throws IOException {
+        this(databasePath, DriverManager::getConnection);
+    }
+
+    // Allows tests to provide a controlled connection implementation.
+    DatabaseManager(
+            Path databasePath,
+            ConnectionFactory connectionFactory
+    ) throws IOException {
+
         Path absolutePath = databasePath.toAbsolutePath();
 
         Path parentDirectory = absolutePath.getParent();
@@ -36,12 +51,13 @@ public final class DatabaseManager implements ConnectionProvider {
         }
 
         this.jdbcUrl = "jdbc:sqlite:" + absolutePath;
+        this.connectionFactory = connectionFactory;
     }
 
     // Opens a database connection and enables foreign-key enforcement.
     @Override
     public Connection getConnection() throws SQLException {
-        Connection connection = DriverManager.getConnection(jdbcUrl);
+        Connection connection = connectionFactory.open(jdbcUrl);
 
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA foreign_keys = ON");
@@ -63,8 +79,10 @@ public final class DatabaseManager implements ConnectionProvider {
 
     // Resolves the database path from the environment variable or default location.
     private static Path resolveDatabasePath() {
-        String configuredPath = System.getenv(DATABASE_PATH_ENV);
+        return resolveDatabasePath(System.getenv(DATABASE_PATH_ENV));
+    }
 
+    static Path resolveDatabasePath(String configuredPath) {
         return Path.of(
                 configuredPath == null || configuredPath.isBlank()
                         ? DEFAULT_DATABASE_PATH

@@ -3,6 +3,7 @@ package com.marquee.db;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -87,6 +88,107 @@ class DatabaseManagerTest {
         }
     }
 
+    @Test
+    void shouldUseDefaultPathWhenConfiguredPathIsNull() {
+        assertEquals(
+                Path.of("marquee.db"),
+                DatabaseManager.resolveDatabasePath(null)
+        );
+    }
+
+    @Test
+    void shouldUseDefaultPathWhenConfiguredPathIsBlank() {
+        assertEquals(
+                Path.of("marquee.db"),
+                DatabaseManager.resolveDatabasePath("   ")
+        );
+    }
+
+    @Test
+    void shouldUseConfiguredPathWhenItIsNotBlank() {
+        assertEquals(
+                Path.of("custom/marquee.db"),
+                DatabaseManager.resolveDatabasePath("custom/marquee.db")
+        );
+    }
+
+    @Test
+    void shouldCreateDatabaseManagerWhenDatabasePathHasNoParentDirectory()
+            throws Exception {
+
+        assertDoesNotThrow(() -> new DatabaseManager(Path.of("/")));
+    }
+
+    @Test
+    void shouldCreateDatabaseManagerUsingDefaultConstructor()
+            throws Exception {
+
+        assertDoesNotThrow(() -> new DatabaseManager());
+    }
+
+    @Test
+    void shouldCloseConnectionWhenPragmaExecutionFails() throws Exception {
+        SQLException executionException =
+                new SQLException("PRAGMA execution failed");
+
+        boolean[] connectionClosed = {false};
+
+        Connection connection = createFailingConnection(
+                executionException,
+                null,
+                connectionClosed
+        );
+
+        DatabaseManager databaseManager = new DatabaseManager(
+                tempDir.resolve("marquee.db"),
+                jdbcUrl -> connection
+        );
+
+        SQLException thrownException = assertThrows(
+                SQLException.class,
+                databaseManager::getConnection
+        );
+
+        assertSame(executionException, thrownException);
+        assertTrue(connectionClosed[0]);
+        assertEquals(0, thrownException.getSuppressed().length);
+    }
+
+    @Test
+    void shouldSuppressConnectionCloseFailureWhenPragmaExecutionFails()
+            throws Exception {
+
+        SQLException executionException =
+                new SQLException("PRAGMA execution failed");
+
+        SQLException closeException =
+                new SQLException("Connection close failed");
+
+        boolean[] connectionClosed = {false};
+
+        Connection connection = createFailingConnection(
+                executionException,
+                closeException,
+                connectionClosed
+        );
+
+        DatabaseManager databaseManager = new DatabaseManager(
+                tempDir.resolve("marquee.db"),
+                jdbcUrl -> connection
+        );
+
+        SQLException thrownException = assertThrows(
+                SQLException.class,
+                databaseManager::getConnection
+        );
+
+        assertSame(executionException, thrownException);
+        assertTrue(connectionClosed[0]);
+
+        assertEquals(1, thrownException.getSuppressed().length);
+        assertSame(closeException, thrownException.getSuppressed()[0]);
+    }
+
     private boolean isForeignKeyEnforcementEnabled(Connection connection)
             throws SQLException {
 
@@ -107,5 +209,52 @@ class DatabaseManagerTest {
 
             return resultSet.getInt(1);
         }
+    }
+
+    private Connection createFailingConnection(
+            SQLException executionException,
+            SQLException closeException,
+            boolean[] connectionClosed
+    ) {
+
+        Statement statement = (Statement) Proxy.newProxyInstance(
+                Statement.class.getClassLoader(),
+                new Class<?>[]{Statement.class},
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("execute")) {
+                        throw executionException;
+                    }
+
+                    if (method.getName().equals("close")) {
+                        return null;
+                    }
+
+                    return null;
+                }
+        );
+
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+
+                    if (method.getName().equals("createStatement")) {
+                        return statement;
+                    }
+
+                    if (method.getName().equals("close")) {
+                        connectionClosed[0] = true;
+
+                        if (closeException != null) {
+                            throw closeException;
+                        }
+
+                        return null;
+                    }
+
+                    return null;
+                }
+        );
     }
 }
