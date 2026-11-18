@@ -136,7 +136,7 @@ public final class FilmService {
             errors.add("Title must not exceed 255 characters");
         }
 
-        if (film.year() < MIN_YEAR) {
+        if (film.year() == null || film.year() < MIN_YEAR) {
             errors.add(
                     "Year must not be earlier than " + MIN_YEAR
             );
