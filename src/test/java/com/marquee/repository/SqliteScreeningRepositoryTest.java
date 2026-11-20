@@ -8,6 +8,7 @@ import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.RepositoryException;
 import com.marquee.exceptions.ScreeningNotFoundException;
 import com.marquee.model.Film;
+import com.marquee.model.Page;
 import com.marquee.model.Screening;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +20,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.sql.*;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -186,7 +188,9 @@ class SqliteScreeningRepositoryTest {
     }
 
     @Test
-    void shouldThrowRepositoryExceptionWhenCreatingScreeningFailsWithSQLException() throws SQLException {
+    void shouldThrowRepositoryExceptionWhenCreatingScreeningFailsWithSQLException()
+            throws SQLException {
+
         Film film = createFilm("Test Film");
 
         ConnectionProvider provider =
@@ -323,6 +327,55 @@ class SqliteScreeningRepositoryTest {
     }
 
     @Test
+    void shouldHandleResultSetAndStatementCloseFailuresWhenQueryFails() {
+        ConnectionProvider provider =
+                connectionProviderWithResultSetReadAndCloseFailures(
+                        "FROM screenings s"
+                );
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findScreeningById(1L)
+        );
+
+        assertEquals("Failed to retrieve screening", exception.getMessage());
+        assertInstanceOf(SQLException.class, exception.getCause());
+
+        // The close failures should be suppressed on the original SQLException.
+        assertEquals(2, exception.getCause().getSuppressed().length);
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenPaginatedScreeningQueryFails()
+            throws SQLException {
+
+        ConnectionProvider provider =
+                connectionProviderThrowingSQLException("FROM screenings s");
+
+        ScreeningRepository repository = new SqliteScreeningRepository(
+                provider,
+                new TransactionManager(provider)
+        );
+
+        RepositoryException exception = assertThrows(
+                RepositoryException.class,
+                () -> repository.findAllScreenings(1, 10)
+        );
+
+        assertEquals(
+                "Failed to retrieve screenings",
+                exception.getMessage()
+        );
+
+        assertInstanceOf(SQLException.class, exception.getCause());
+    }
+
+    @Test
     void shouldFindAllScreeningsOrderedByScreeningTime() {
         createScreening(
                 "Film One",
@@ -342,10 +395,14 @@ class SqliteScreeningRepositoryTest {
                 "2026-12-02T18:00:00"
         );
 
-        List<Screening> screenings =
-                screeningRepository.findAllScreenings();
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(1, 10);
 
-        assertEquals(3, screenings.size());
+        assertEquals(3, result.total());
+        assertEquals(1, result.page());
+        assertEquals(10, result.perPage());
+        assertEquals(1, result.totalPages());
+        assertEquals(3, result.items().size());
 
         assertEquals(
                 List.of(
@@ -353,7 +410,7 @@ class SqliteScreeningRepositoryTest {
                         "2026-12-02T18:00:00",
                         "2026-12-03T18:00:00"
                 ),
-                screenings.stream()
+                result.items().stream()
                         .map(Screening::screeningTime)
                         .toList()
         );
@@ -373,20 +430,114 @@ class SqliteScreeningRepositoryTest {
                 "2026-12-01T18:00:00"
         );
 
-        List<Screening> screenings =
-                screeningRepository.findAllScreenings();
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(1, 10);
 
-        assertEquals(2, screenings.size());
-        assertEquals(first.screeningId(), screenings.get(0).screeningId());
-        assertEquals(second.screeningId(), screenings.get(1).screeningId());
+        assertEquals(2, result.total());
+        assertEquals(2, result.items().size());
+        assertEquals(first.screeningId(), result.items().get(0).screeningId());
+        assertEquals(second.screeningId(), result.items().get(1).screeningId());
     }
 
     @Test
-    void shouldReturnEmptyListWhenNoScreeningsExist() {
-        List<Screening> screenings =
-                screeningRepository.findAllScreenings();
+    void shouldReturnEmptyPageWhenNoScreeningsExist() {
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(1, 10);
 
-        assertTrue(screenings.isEmpty());
+        assertEquals(0, result.total());
+        assertEquals(0, result.totalPages());
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldReturnFirstPageOfScreenings() {
+        createScreening("Film One", "Cinema One", "2026-12-01T18:00:00");
+        createScreening("Film Two", "Cinema Two", "2026-12-02T18:00:00");
+        createScreening("Film Three", "Cinema Three", "2026-12-03T18:00:00");
+        createScreening("Film Four", "Cinema Four", "2026-12-04T18:00:00");
+        createScreening("Film Five", "Cinema Five", "2026-12-05T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(1, 2);
+
+        assertEquals(1, result.page());
+        assertEquals(2, result.perPage());
+        assertEquals(5, result.total());
+        assertEquals(3, result.totalPages());
+        assertEquals(2, result.items().size());
+
+        assertEquals(
+                List.of(
+                        "2026-12-01T18:00:00",
+                        "2026-12-02T18:00:00"
+                ),
+                result.items().stream()
+                        .map(Screening::screeningTime)
+                        .toList()
+        );
+    }
+
+    @Test
+    void shouldReturnSecondPageOfScreenings() {
+        createScreening("Film One", "Cinema One", "2026-12-01T18:00:00");
+        createScreening("Film Two", "Cinema Two", "2026-12-02T18:00:00");
+        createScreening("Film Three", "Cinema Three", "2026-12-03T18:00:00");
+        createScreening("Film Four", "Cinema Four", "2026-12-04T18:00:00");
+        createScreening("Film Five", "Cinema Five", "2026-12-05T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(2, 2);
+
+        assertEquals(2, result.page());
+        assertEquals(2, result.perPage());
+        assertEquals(5, result.total());
+        assertEquals(3, result.totalPages());
+        assertEquals(2, result.items().size());
+
+        assertEquals(
+                List.of(
+                        "2026-12-03T18:00:00",
+                        "2026-12-04T18:00:00"
+                ),
+                result.items().stream()
+                        .map(Screening::screeningTime)
+                        .toList()
+        );
+    }
+
+    @Test
+    void shouldReturnLastPageWithRemainingScreenings() {
+        createScreening("Film One", "Cinema One", "2026-12-01T18:00:00");
+        createScreening("Film Two", "Cinema Two", "2026-12-02T18:00:00");
+        createScreening("Film Three", "Cinema Three", "2026-12-03T18:00:00");
+        createScreening("Film Four", "Cinema Four", "2026-12-04T18:00:00");
+        createScreening("Film Five", "Cinema Five", "2026-12-05T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(3, 2);
+
+        assertEquals(3, result.page());
+        assertEquals(5, result.total());
+        assertEquals(3, result.totalPages());
+        assertEquals(1, result.items().size());
+        assertEquals(
+                "2026-12-05T18:00:00",
+                result.items().get(0).screeningTime()
+        );
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenPageIsBeyondAvailableResults() {
+        createScreening("Film One", "Cinema One", "2026-12-01T18:00:00");
+        createScreening("Film Two", "Cinema Two", "2026-12-02T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findAllScreenings(3, 2);
+
+        assertEquals(3, result.page());
+        assertEquals(2, result.total());
+        assertEquals(1, result.totalPages());
+        assertTrue(result.items().isEmpty());
     }
 
     @Test
@@ -412,15 +563,18 @@ class SqliteScreeningRepositoryTest {
                 "2026-12-03T18:00:00"
         );
 
-        List<Screening> screenings =
+        Page<Screening> result =
                 screeningRepository.findScreeningsByFilmId(
-                        firstFilm.filmId()
+                        firstFilm.filmId(),
+                        1,
+                        10
                 );
 
-        assertEquals(2, screenings.size());
+        assertEquals(2, result.total());
+        assertEquals(2, result.items().size());
 
         assertTrue(
-                screenings.stream().allMatch(
+                result.items().stream().allMatch(
                         screening -> screening.filmId().equals(firstFilm.filmId())
                 )
         );
@@ -430,20 +584,48 @@ class SqliteScreeningRepositoryTest {
                         "2026-12-01T18:00:00",
                         "2026-12-02T18:00:00"
                 ),
-                screenings.stream()
+                result.items().stream()
                         .map(Screening::screeningTime)
                         .toList()
         );
     }
 
     @Test
-    void shouldReturnEmptyListWhenFilmHasNoScreenings() {
+    void shouldPaginateScreeningsByFilmId() {
+        Film film = createFilm("Test Film");
+
+        createScreening(film.filmId(), "Cinema One", "2026-12-01T18:00:00");
+        createScreening(film.filmId(), "Cinema Two", "2026-12-02T18:00:00");
+        createScreening(film.filmId(), "Cinema Three", "2026-12-03T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByFilmId(
+                        film.filmId(),
+                        2,
+                        2
+                );
+
+        assertEquals(2, result.page());
+        assertEquals(2, result.perPage());
+        assertEquals(3, result.total());
+        assertEquals(2, result.totalPages());
+        assertEquals(1, result.items().size());
+        assertEquals("2026-12-03T18:00:00", result.items().get(0).screeningTime());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenFilmHasNoScreenings() {
         Film film = createFilm("Film Without Screenings");
 
-        List<Screening> screenings =
-                screeningRepository.findScreeningsByFilmId(film.filmId());
+        Page<Screening> result =
+                screeningRepository.findScreeningsByFilmId(
+                        film.filmId(),
+                        1,
+                        10
+                );
 
-        assertTrue(screenings.isEmpty());
+        assertEquals(0, result.total());
+        assertTrue(result.items().isEmpty());
     }
 
     @Test
@@ -466,13 +648,14 @@ class SqliteScreeningRepositoryTest {
                 "2026-12-01T20:00:00"
         );
 
-        List<Screening> screenings =
-                screeningRepository.findScreeningsByVenue("Test Cinema");
+        Page<Screening> result =
+                screeningRepository.findScreeningsByVenue("Test Cinema", 1, 10);
 
-        assertEquals(2, screenings.size());
+        assertEquals(2, result.total());
+        assertEquals(2, result.items().size());
 
         assertTrue(
-                screenings.stream().allMatch(
+                result.items().stream().allMatch(
                         screening -> screening.venue().equals("Test Cinema")
                 )
         );
@@ -482,18 +665,141 @@ class SqliteScreeningRepositoryTest {
                         "2026-12-01T20:00:00",
                         "2026-12-02T18:00:00"
                 ),
-                screenings.stream()
+                result.items().stream()
                         .map(Screening::screeningTime)
                         .toList()
         );
     }
 
     @Test
-    void shouldReturnEmptyListWhenVenueHasNoScreenings() {
-        List<Screening> screenings =
-                screeningRepository.findScreeningsByVenue("Unknown Cinema");
+    void shouldPaginateScreeningsByVenue() {
+        createScreening("Film One", "Test Cinema", "2026-12-01T18:00:00");
+        createScreening("Film Two", "Test Cinema", "2026-12-02T18:00:00");
+        createScreening("Film Three", "Test Cinema", "2026-12-03T18:00:00");
+        createScreening("Film Four", "Other Cinema", "2026-12-04T18:00:00");
 
-        assertTrue(screenings.isEmpty());
+        Page<Screening> result =
+                screeningRepository.findScreeningsByVenue("Test Cinema", 2, 2);
+
+        assertEquals(2, result.page());
+        assertEquals(3, result.total());
+        assertEquals(2, result.totalPages());
+        assertEquals(1, result.items().size());
+        assertEquals("2026-12-03T18:00:00", result.items().get(0).screeningTime());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenVenueHasNoScreenings() {
+        Page<Screening> result =
+                screeningRepository.findScreeningsByVenue("Unknown Cinema", 1, 10);
+
+        assertEquals(0, result.total());
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldFindScreeningsByDate() {
+        createScreening("Previous Day Film", "Cinema One", "2026-11-30T23:59:59");
+        createScreening("First Film", "Cinema Two", "2026-12-01T10:00:00");
+        createScreening("Second Film", "Cinema Three", "2026-12-01T18:00:00");
+        createScreening("Next Day Film", "Cinema Four", "2026-12-02T00:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByDate(
+                        LocalDate.of(2026, 12, 1),
+                        1,
+                        10
+                );
+
+        assertEquals(2, result.total());
+        assertEquals(2, result.items().size());
+
+        assertEquals(
+                List.of(
+                        "2026-12-01T10:00:00",
+                        "2026-12-01T18:00:00"
+                ),
+                result.items().stream()
+                        .map(Screening::screeningTime)
+                        .toList()
+        );
+    }
+
+    @Test
+    void shouldIncludeScreeningAtStartOfRequestedDate() {
+        createScreening(
+                "Midnight Film",
+                "Test Cinema",
+                "2026-12-01T00:00:00"
+        );
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByDate(
+                        LocalDate.of(2026, 12, 1),
+                        1,
+                        10
+                );
+
+        assertEquals(1, result.total());
+        assertEquals(1, result.items().size());
+        assertEquals("2026-12-01T00:00:00", result.items().get(0).screeningTime());
+    }
+
+    @Test
+    void shouldIncludeScreeningAtEndOfRequestedDate() {
+        createScreening(
+                "Last Screening",
+                "Test Cinema",
+                "2026-12-01T23:59:59"
+        );
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByDate(
+                        LocalDate.of(2026, 12, 1),
+                        1,
+                        10
+                );
+
+        assertEquals(1, result.total());
+        assertEquals(1, result.items().size());
+        assertEquals("2026-12-01T23:59:59", result.items().get(0).screeningTime());
+    }
+
+    @Test
+    void shouldPaginateScreeningsByDate() {
+        createScreening("Film One", "Cinema One", "2026-12-01T10:00:00");
+        createScreening("Film Two", "Cinema Two", "2026-12-01T12:00:00");
+        createScreening("Film Three", "Cinema Three", "2026-12-01T18:00:00");
+        createScreening("Other Day Film", "Cinema Four", "2026-12-02T10:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByDate(
+                        LocalDate.of(2026, 12, 1),
+                        2,
+                        2
+                );
+
+        assertEquals(2, result.page());
+        assertEquals(2, result.perPage());
+        assertEquals(3, result.total());
+        assertEquals(2, result.totalPages());
+        assertEquals(1, result.items().size());
+        assertEquals("2026-12-01T18:00:00", result.items().get(0).screeningTime());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoScreeningsExistOnDate() {
+        createScreening("Other Day Film", "Cinema One", "2026-12-02T18:00:00");
+
+        Page<Screening> result =
+                screeningRepository.findScreeningsByDate(
+                        LocalDate.of(2026, 12, 1),
+                        1,
+                        10
+                );
+
+        assertEquals(0, result.total());
+        assertTrue(result.items().isEmpty());
     }
 
     @Test
@@ -699,6 +1005,46 @@ class SqliteScreeningRepositoryTest {
                                 "2026-12-01T18:00:00"
                         )
                 )
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenPageIsLessThanOne() {
+        assertThrows(
+                RepositoryException.class,
+                () -> screeningRepository.findAllScreenings(0, 10)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenPerPageIsLessThanOne() {
+        assertThrows(
+                RepositoryException.class,
+                () -> screeningRepository.findAllScreenings(1, 0)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenVenueIsNull() {
+        assertThrows(
+                RepositoryException.class,
+                () -> screeningRepository.findScreeningsByVenue(null, 1, 10)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenVenueIsBlank() {
+        assertThrows(
+                RepositoryException.class,
+                () -> screeningRepository.findScreeningsByVenue("   ", 1, 10)
+        );
+    }
+
+    @Test
+    void shouldThrowRepositoryExceptionWhenDateIsNull() {
+        assertThrows(
+                RepositoryException.class,
+                () -> screeningRepository.findScreeningsByDate(null, 1, 10)
         );
     }
 
@@ -913,6 +1259,93 @@ class SqliteScreeningRepositoryTest {
                                 method,
                                 args
                         );
+                    }
+            );
+        };
+    }
+
+    private ConnectionProvider connectionProviderWithResultSetReadAndCloseFailures(
+            String sqlFragment) {
+
+        return () -> {
+            Connection connection = databaseManager.getConnection();
+
+            return createProxy(
+                    Connection.class,
+                    (proxy, method, args) -> {
+
+                        Object result = invokeDelegate(
+                                connection,
+                                method,
+                                args
+                        );
+
+                        if (method.getName().equals("prepareStatement")
+                                && result instanceof PreparedStatement statement
+                                && ((String) args[0]).contains(sqlFragment)) {
+
+                            return createProxy(
+                                    PreparedStatement.class,
+                                    (statementProxy, statementMethod, statementArgs) -> {
+
+                                        if (statementMethod.getName().equals("close")) {
+                                            invokeDelegate(
+                                                    statement,
+                                                    statementMethod,
+                                                    statementArgs
+                                            );
+
+                                            throw new SQLException(
+                                                    "Simulated PreparedStatement close failure"
+                                            );
+                                        }
+
+                                        Object statementResult = invokeDelegate(
+                                                statement,
+                                                statementMethod,
+                                                statementArgs
+                                        );
+
+                                        if (statementMethod.getName().equals("executeQuery")
+                                                && statementResult instanceof ResultSet resultSet) {
+
+                                            return createProxy(
+                                                    ResultSet.class,
+                                                    (resultSetProxy, resultSetMethod, resultSetArgs) -> {
+
+                                                        if (resultSetMethod.getName().equals("next")) {
+                                                            throw new SQLException(
+                                                                    "Simulated ResultSet read failure"
+                                                            );
+                                                        }
+
+                                                        if (resultSetMethod.getName().equals("close")) {
+                                                            invokeDelegate(
+                                                                    resultSet,
+                                                                    resultSetMethod,
+                                                                    resultSetArgs
+                                                            );
+
+                                                            throw new SQLException(
+                                                                    "Simulated ResultSet close failure"
+                                                            );
+                                                        }
+
+                                                        return invokeDelegate(
+                                                                resultSet,
+                                                                resultSetMethod,
+                                                                resultSetArgs
+                                                        );
+                                                    }
+                                            );
+                                        }
+
+                                        return statementResult;
+                                    }
+                            );
+                        }
+
+                        return result;
                     }
             );
         };

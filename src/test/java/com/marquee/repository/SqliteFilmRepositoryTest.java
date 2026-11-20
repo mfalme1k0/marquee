@@ -724,4 +724,304 @@ class SqliteFilmRepositoryTest {
             );
         };
     }
+
+    @Test
+    void shouldFindFilmsByPartialTitle() {
+        createFilm("The Dark Knight", 2008);
+        createFilm("The Dark Knight Rises", 2012);
+        createFilm("Inception", 2010);
+
+        Page<Film> result = filmRepository.findFilmsByTitle("Dark Knight", 1, 10);
+
+        assertEquals(2, result.total());
+        assertEquals(1, result.totalPages());
+        assertEquals(2, result.items().size());
+
+        assertEquals(
+                List.of("The Dark Knight", "The Dark Knight Rises"),
+                result.items().stream().map(Film::title).toList()
+        );
+    }
+
+    @Test
+    void shouldTrimTitleSearchText() {
+        createFilm("The Dark Knight", 2008);
+
+        Page<Film> result = filmRepository.findFilmsByTitle("  Dark Knight  ", 1, 10);
+
+        assertEquals(1, result.total());
+        assertEquals("The Dark Knight", result.items().getFirst().title());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoFilmsMatchTitle() {
+        createFilm("Inception", 2010);
+
+        Page<Film> result = filmRepository.findFilmsByTitle("Interstellar", 1, 10);
+
+        assertEquals(0, result.total());
+        assertEquals(0, result.totalPages());
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldRejectNullTitleSearchText() {
+        assertThrows(
+                RepositoryException.class,
+                () -> filmRepository.findFilmsByTitle(null, 1, 10)
+        );
+    }
+
+    @Test
+    void shouldRejectBlankTitleSearchText() {
+        assertThrows(
+                RepositoryException.class,
+                () -> filmRepository.findFilmsByTitle("   ", 1, 10)
+        );
+    }
+
+    @Test
+    void shouldFindFilmsByYear() {
+        createFilm("Film One", 2020);
+        createFilm("Film Two", 2020);
+        createFilm("Film Three", 2021);
+
+        Page<Film> result = filmRepository.findFilmsByYear(2020, 1, 10);
+
+        assertEquals(2, result.total());
+        assertEquals(1, result.totalPages());
+        assertEquals(2, result.items().size());
+
+        assertTrue(result.items().stream().allMatch(film -> film.year() == 2020));
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoFilmsMatchYear() {
+        createFilm("Film One", 2020);
+
+        Page<Film> result = filmRepository.findFilmsByYear(2025, 1, 10);
+
+        assertEquals(0, result.total());
+        assertEquals(0, result.totalPages());
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldPaginateFilmsFilteredByYear() {
+        createFilm("Film One", 2020);
+        createFilm("Film Two", 2020);
+        createFilm("Film Three", 2020);
+        createFilm("Film Four", 2021);
+
+        Page<Film> firstPage = filmRepository.findFilmsByYear(2020, 1, 2);
+        Page<Film> secondPage = filmRepository.findFilmsByYear(2020, 2, 2);
+
+        assertEquals(3, firstPage.total());
+        assertEquals(2, firstPage.items().size());
+        assertEquals(1, secondPage.items().size());
+    }
+
+    @Test
+    void shouldFindFilmsByGenreId() {
+        Genre action = createGenre("Action");
+        Genre comedy = createGenre("Comedy");
+
+        filmRepository.createFilm(
+                new Film(null, "Action Film", 2020, null, null, List.of(action))
+        );
+
+        filmRepository.createFilm(
+                new Film(null, "Comedy Film", 2021, null, null, List.of(comedy))
+        );
+
+        filmRepository.createFilm(
+                new Film(null, "Action Comedy", 2022, null, null, List.of(action, comedy))
+        );
+
+        Page<Film> result = filmRepository.findFilmsByGenreId(
+                action.genreId(), 1, 10
+        );
+
+        assertEquals(2, result.total());
+        assertEquals(2, result.items().size());
+
+        assertEquals(
+                List.of("Action Film", "Action Comedy"),
+                result.items().stream().map(Film::title).toList()
+        );
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoFilmsBelongToGenre() {
+        Genre action = createGenre("Action");
+
+        createFilm("Comedy Film", 2020);
+
+        Page<Film> result = filmRepository.findFilmsByGenreId(
+                action.genreId(), 1, 10
+        );
+
+        assertEquals(0, result.total());
+        assertEquals(0, result.totalPages());
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldPaginateFilmsFilteredByGenreId() {
+        Genre action = createGenre("Action");
+        Genre comedy = createGenre("Comedy");
+
+        filmRepository.createFilm(
+                new Film(null, "Film One", 2020, null, null, List.of(action))
+        );
+
+        filmRepository.createFilm(
+                new Film(null, "Film Two", 2021, null, null, List.of(action, comedy))
+        );
+
+        filmRepository.createFilm(
+                new Film(null, "Film Three", 2022, null, null, List.of(action))
+        );
+
+        Page<Film> firstPage = filmRepository.findFilmsByGenreId(
+                action.genreId(), 1, 2
+        );
+
+        Page<Film> secondPage = filmRepository.findFilmsByGenreId(
+                action.genreId(), 2, 2
+        );
+
+        assertEquals(3, firstPage.total());
+        assertEquals(2, firstPage.items().size());
+        assertEquals(1, secondPage.items().size());
+    }
+
+    @Test
+    void shouldAddGenreToExistingFilm() {
+        Genre action = createGenre("Action");
+        Film film = createFilm("Test Film", 2020);
+
+        assertTrue(
+                filmRepository.addGenreToFilm(film.filmId(), action.genreId())
+        );
+
+        Film updatedFilm = filmRepository.findFilmById(film.filmId())
+                .orElseThrow();
+
+        assertEquals(List.of(action), updatedFilm.genres());
+    }
+
+    @Test
+    void shouldReturnFalseWhenAddingDuplicateGenreAssociation() {
+        Genre action = createGenre("Action");
+
+        Film film = filmRepository.createFilm(
+                new Film(null, "Test Film", 2020, null, null, List.of(action))
+        );
+
+        assertFalse(
+                filmRepository.addGenreToFilm(film.filmId(), action.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowFilmNotFoundExceptionWhenAddingGenreToNonexistentFilm() {
+        Genre action = createGenre("Action");
+
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> filmRepository.addGenreToFilm(-1L, action.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowGenreNotFoundExceptionWhenAddingNonexistentGenreToFilm() {
+        Film film = createFilm("Test Film", 2020);
+
+        assertThrows(
+                GenreNotFoundException.class,
+                () -> filmRepository.addGenreToFilm(film.filmId(), -1L)
+        );
+    }
+
+    @Test
+    void shouldRemoveGenreFromExistingFilm() {
+        Genre action = createGenre("Action");
+
+        Film film = filmRepository.createFilm(
+                new Film(null, "Test Film", 2020, null, null, List.of(action))
+        );
+
+        assertTrue(
+                filmRepository.removeGenreFromFilm(film.filmId(), action.genreId())
+        );
+
+        Film updatedFilm = filmRepository.findFilmById(film.filmId())
+                .orElseThrow();
+
+        assertTrue(updatedFilm.genres().isEmpty());
+    }
+
+    @Test
+    void shouldReturnFalseWhenRemovingNonexistentGenreAssociation() {
+        Genre action = createGenre("Action");
+        Genre comedy = createGenre("Comedy");
+
+        Film film = filmRepository.createFilm(
+                new Film(null, "Test Film", 2020, null, null, List.of(action))
+        );
+
+        assertFalse(
+                filmRepository.removeGenreFromFilm(film.filmId(), comedy.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowFilmNotFoundExceptionWhenRemovingGenreFromNonexistentFilm() {
+        Genre action = createGenre("Action");
+
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> filmRepository.removeGenreFromFilm(-1L, action.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowGenreNotFoundExceptionWhenRemovingNonexistentGenre() {
+        Film film = createFilm("Test Film", 2020);
+
+        assertThrows(
+                GenreNotFoundException.class,
+                () -> filmRepository.removeGenreFromFilm(film.filmId(), -1L)
+        );
+    }
+
+    @Test
+    void shouldReturnFalseWhenGenreAssociationInsertAffectsNoRows() throws SQLException {
+        Genre action = createGenre("Action");
+        Film film = createFilm("Test Film", 2020);
+
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement()) {
+
+            statement.execute("""
+                CREATE TRIGGER ignore_film_genre_insert
+                BEFORE INSERT ON film_genres
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END
+                """);
+        }
+
+        assertFalse(
+                filmRepository.addGenreToFilm(film.filmId(), action.genreId())
+        );
+
+        assertTrue(
+                filmRepository.findFilmById(film.filmId())
+                        .orElseThrow()
+                        .genres()
+                        .isEmpty()
+        );
+    }
 }

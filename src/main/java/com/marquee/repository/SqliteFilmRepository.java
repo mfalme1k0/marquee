@@ -99,15 +99,109 @@ public final class SqliteFilmRepository implements FilmRepository {
     // Both queries use the same transaction to maintain a consistent snapshot.
     @Override
     public Page<Film> findAllFilms(int page, int perPage) {
-        if (page < 1 || perPage < 1) {
-            throw new RepositoryException(
-                    "Page and perPage must both be greater than zero"
-            );
-        }
+        validatePagination(page, perPage);
 
         return transactionManager.executeInTransaction(connection -> {
             long total = countFilms(connection);
             List<Film> films = findPage(connection, page, perPage);
+
+            return new Page<>(page, perPage, total, films);
+        });
+    }
+
+    // Retrieves a page of films whose titles contain the supplied search text.
+    // Matching is partial, and the total count only includes matching films.
+    @Override
+    public Page<Film> findFilmsByTitle(String title, int page, int perPage) {
+        if (title == null || title.isBlank()) {
+            throw new RepositoryException("Title search text must not be blank");
+        }
+
+        validatePagination(page, perPage);
+
+        return transactionManager.executeInTransaction(connection -> {
+            String whereClause = "f.title LIKE ?";
+
+            String searchPattern = "%" + title.trim() + "%";
+
+            long total = countFilteredFilms(
+                    connection,
+                    whereClause,
+                    statement -> statement.setString(1, searchPattern)
+            );
+
+            List<Film> films = findFilteredPage(
+                    connection,
+                    whereClause,
+                    statement -> statement.setString(1, searchPattern),
+                    page,
+                    perPage
+            );
+
+            return new Page<>(page, perPage, total, films);
+        });
+    }
+
+    // Retrieves a page of films released in the specified year.
+    // The total count only includes films matching that year.
+    @Override
+    public Page<Film> findFilmsByYear(int year, int page, int perPage) {
+        validatePagination(page, perPage);
+
+        return transactionManager.executeInTransaction(connection -> {
+            String whereClause = "f.year = ?";
+
+            long total = countFilteredFilms(
+                    connection,
+                    whereClause,
+                    statement -> statement.setInt(1, year)
+            );
+
+            List<Film> films = findFilteredPage(
+                    connection,
+                    whereClause,
+                    statement -> statement.setInt(1, year),
+                    page,
+                    perPage
+            );
+
+            return new Page<>(page, perPage, total, films);
+        });
+    }
+
+    // Retrieves a page of films associated with the specified genre.
+    // EXISTS avoids duplicate films if the underlying query is extended later.
+    @Override
+    public Page<Film> findFilmsByGenreId(
+            long genreId,
+            int page,
+            int perPage) {
+
+        validatePagination(page, perPage);
+
+        return transactionManager.executeInTransaction(connection -> {
+            String whereClause = """
+                EXISTS (
+                    SELECT 1
+                    FROM film_genres filtered_fg
+                    WHERE filtered_fg.film_id = f.film_id
+                      AND filtered_fg.genre_id = ?
+                )
+                """;
+
+            long total = countFilteredFilms(
+                    connection,
+                    whereClause,
+                    statement -> statement.setLong(1, genreId)
+            );
+
+            List<Film> films = findFilteredPage(
+                    connection,
+                    whereClause,
+                    statement -> statement.setLong(1, genreId),
+                    page,
+                    perPage
+            );
 
             return new Page<>(page, perPage, total, films);
         });
@@ -168,6 +262,83 @@ public final class SqliteFilmRepository implements FilmRepository {
 
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setLong(1, filmId);
+                return statement.executeUpdate() > 0;
+            }
+        });
+    }
+
+    // Associates an existing genre with an existing film.
+    // Returns false if the association already exists.
+    @Override
+    public boolean addGenreToFilm(long filmId, long genreId) {
+        return transactionManager.executeInTransaction(connection -> {
+            if (!filmExists(connection, filmId)) {
+                throw new FilmNotFoundException(filmId);
+            }
+
+            if (!genreExists(connection, genreId)) {
+                throw new GenreNotFoundException(genreId);
+            }
+
+            String checkSql = """
+                SELECT 1
+                FROM film_genres
+                WHERE film_id = ? AND genre_id = ?
+                """;
+
+            try (PreparedStatement statement =
+                         connection.prepareStatement(checkSql)) {
+
+                statement.setLong(1, filmId);
+                statement.setLong(2, genreId);
+
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        return false;
+                    }
+                }
+            }
+
+            String insertSql = """
+                INSERT INTO film_genres (film_id, genre_id)
+                VALUES (?, ?)
+                """;
+
+            try (PreparedStatement statement =
+                         connection.prepareStatement(insertSql)) {
+
+                statement.setLong(1, filmId);
+                statement.setLong(2, genreId);
+
+                return statement.executeUpdate() > 0;
+            }
+        });
+    }
+
+    // Removes a genre association from an existing film.
+    // Returns false if the association does not exist.
+    @Override
+    public boolean removeGenreFromFilm(long filmId, long genreId) {
+        return transactionManager.executeInTransaction(connection -> {
+            if (!filmExists(connection, filmId)) {
+                throw new FilmNotFoundException(filmId);
+            }
+
+            if (!genreExists(connection, genreId)) {
+                throw new GenreNotFoundException(genreId);
+            }
+
+            String sql = """
+                DELETE FROM film_genres
+                WHERE film_id = ? AND genre_id = ?
+                """;
+
+            try (PreparedStatement statement =
+                         connection.prepareStatement(sql)) {
+
+                statement.setLong(1, filmId);
+                statement.setLong(2, genreId);
+
                 return statement.executeUpdate() > 0;
             }
         });
@@ -240,6 +411,103 @@ public final class SqliteFilmRepository implements FilmRepository {
                 return mapFilms(resultSet).values().stream()
                         .map(FilmBuilder::build)
                         .toList();
+            }
+        }
+    }
+
+    // Validates pagination arguments consistently across film retrieval methods.
+    private void validatePagination(int page, int perPage) {
+        if (page < 1 || perPage < 1) {
+            throw new RepositoryException(
+                    "Page and perPage must both be greater than zero"
+            );
+        }
+    }
+
+    // Counts films matching a supplied WHERE clause.
+    private long countFilteredFilms(
+            Connection connection,
+            String whereClause,
+            SqlBinder binder
+    ) throws SQLException {
+
+        String sql = "SELECT COUNT(*) FROM films f WHERE " + whereClause;
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getLong(1);
+            }
+        }
+    }
+
+    // Retrieves a page of matching films, including their associated genres.
+    // Pagination happens before joining genres so each film occupies one page slot.
+    private List<Film> findFilteredPage(
+            Connection connection,
+            String whereClause,
+            SqlBinder binder,
+            int page,
+            int perPage
+    ) throws SQLException {
+
+        String sql = """
+            SELECT f.film_id, f.title, f.year, f.description, f.created_at,
+                   g.genre_id, g.name AS genre_name
+            FROM (
+                SELECT f.film_id, f.title, f.year, f.description, f.created_at
+                FROM films f
+                WHERE %s
+                ORDER BY f.film_id
+                LIMIT ? OFFSET ?
+            ) f
+            LEFT JOIN film_genres fg ON f.film_id = fg.film_id
+            LEFT JOIN genres g ON fg.genre_id = g.genre_id
+            ORDER BY f.film_id, g.genre_id
+            """.formatted(whereClause);
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+
+            statement.setInt(2, perPage);
+            statement.setInt(3, Page.offset(page, perPage));
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return mapFilms(resultSet).values().stream()
+                        .map(FilmBuilder::build)
+                        .toList();
+            }
+        }
+    }
+
+    // Checks whether a film exists.
+    private boolean filmExists(Connection connection, long filmId)
+            throws SQLException {
+
+        String sql = "SELECT 1 FROM films WHERE film_id = ?";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, filmId);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    // Checks whether a genre exists.
+    private boolean genreExists(Connection connection, long genreId)
+            throws SQLException {
+
+        String sql = "SELECT 1 FROM genres WHERE genre_id = ?";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, genreId);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
             }
         }
     }
@@ -354,6 +622,11 @@ public final class SqliteFilmRepository implements FilmRepository {
     @FunctionalInterface
     private interface SqlFunction<T> {
         T apply(Connection connection) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface SqlBinder {
+        void bind(PreparedStatement statement) throws SQLException;
     }
 
     // Accumulates a film's database fields and associated genres while mapping query results.
