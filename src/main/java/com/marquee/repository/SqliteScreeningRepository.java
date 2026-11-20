@@ -5,12 +5,14 @@ import com.marquee.db.transactions.TransactionManager;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.RepositoryException;
 import com.marquee.exceptions.ScreeningNotFoundException;
+import com.marquee.model.Page;
 import com.marquee.model.Screening;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -115,93 +117,72 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
         });
     }
 
-    // Retrieves all screenings ordered by screening time.
+    // Retrieves a paginated list of all screenings.
     @Override
-    public List<Screening> findAllScreenings() {
-        String sql = """
-                SELECT s.screening_id, s.film_id, f.title AS film_title,
-                       s.venue, s.screening_time
-                FROM screenings s
-                JOIN films f ON f.film_id = s.film_id
-                ORDER BY s.screening_time, s.screening_id
-                """;
-
-        return withConnection("Failed to retrieve screenings", connection -> {
-            try (PreparedStatement statement = connection.prepareStatement(sql);
-                 ResultSet resultSet = statement.executeQuery()) {
-
-                List<Screening> screenings = new ArrayList<>();
-
-                while (resultSet.next()) {
-                    screenings.add(mapScreening(resultSet));
-                }
-
-                return List.copyOf(screenings);
-            }
-        });
-    }
-
-    // Retrieves all screenings associated with the specified film.
-    @Override
-    public List<Screening> findScreeningsByFilmId(long filmId) {
-        String sql = """
-                SELECT s.screening_id, s.film_id, f.title AS film_title,
-                       s.venue, s.screening_time
-                FROM screenings s
-                JOIN films f ON f.film_id = s.film_id
-                WHERE s.film_id = ?
-                ORDER BY s.screening_time, s.screening_id
-                """;
-
-        return withConnection(
-                "Failed to retrieve screenings for film " + filmId,
-                connection -> {
-                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                        statement.setLong(1, filmId);
-
-                        try (ResultSet resultSet = statement.executeQuery()) {
-                            List<Screening> screenings = new ArrayList<>();
-
-                            while (resultSet.next()) {
-                                screenings.add(mapScreening(resultSet));
-                            }
-
-                            return List.copyOf(screenings);
-                        }
-                    }
-                }
+    public Page<Screening> findAllScreenings(int page, int perPage) {
+        return findScreeningPage(
+                "",
+                statement -> {
+                },
+                page,
+                perPage,
+                "Failed to retrieve screenings"
         );
     }
 
-    // Retrieves all screenings held at the specified venue.
+    // Retrieves paginated screenings associated with the specified film.
     @Override
-    public List<Screening> findScreeningsByVenue(String venue) {
-        String sql = """
-                SELECT s.screening_id, s.film_id, f.title AS film_title,
-                       s.venue, s.screening_time
-                FROM screenings s
-                JOIN films f ON f.film_id = s.film_id
-                WHERE s.venue = ?
-                ORDER BY s.screening_time, s.screening_id
-                """;
+    public Page<Screening> findScreeningsByFilmId(
+            long filmId, int page, int perPage) {
 
-        return withConnection(
-                "Failed to retrieve screenings for venue " + venue,
-                connection -> {
-                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                        statement.setString(1, venue);
+        return findScreeningPage(
+                "WHERE s.film_id = ?",
+                statement -> statement.setLong(1, filmId),
+                page,
+                perPage,
+                "Failed to retrieve screenings for film " + filmId
+        );
+    }
 
-                        try (ResultSet resultSet = statement.executeQuery()) {
-                            List<Screening> screenings = new ArrayList<>();
+    // Retrieves paginated screenings held at the specified venue.
+    @Override
+    public Page<Screening> findScreeningsByVenue(
+            String venue, int page, int perPage) {
 
-                            while (resultSet.next()) {
-                                screenings.add(mapScreening(resultSet));
-                            }
+        if (venue == null || venue.isBlank()) {
+            throw new RepositoryException("Venue must not be blank");
+        }
 
-                            return List.copyOf(screenings);
-                        }
-                    }
-                }
+        return findScreeningPage(
+                "WHERE s.venue = ?",
+                statement -> statement.setString(1, venue),
+                page,
+                perPage,
+                "Failed to retrieve screenings for venue " + venue
+        );
+    }
+
+    // Retrieves paginated screenings scheduled on the specified date.
+    @Override
+    public Page<Screening> findScreeningsByDate(
+            LocalDate date, int page, int perPage) {
+
+        if (date == null) {
+            throw new RepositoryException("Screening date must not be null");
+        }
+
+        String startDateTime = date + "T00:00:00";
+        String endDateTime = date.plusDays(1) + "T00:00:00";
+
+        return findScreeningPage(
+                "WHERE s.screening_time >= ? AND s.screening_time < ?",
+                statement -> {
+                    statement.setString(1, startDateTime);
+                    statement.setString(2, endDateTime);
+                },
+                page,
+                perPage,
+                "Failed to retrieve screenings for date " + date
         );
     }
 
@@ -269,6 +250,92 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
                 return statement.executeUpdate() > 0;
             }
         });
+    }
+
+    // Retrieves a consistent paginated screening result and its total count.
+    private Page<Screening> findScreeningPage(
+            String whereClause,
+            SqlStatementBinder filterBinder,
+            int page,
+            int perPage,
+            String errorMessage) {
+
+        if (page < 1 || perPage < 1) {
+            throw new RepositoryException("Page and perPage must be >= 1");
+        }
+
+        int offset = Page.offset(page, perPage);
+
+        return transactionManager.executeInTransaction(connection -> {
+            String countSql = """
+                    SELECT COUNT(*)
+                    FROM screenings s
+                    """ + whereClause;
+
+            String dataSql = """
+                    SELECT s.screening_id, s.film_id, f.title AS film_title,
+                           s.venue, s.screening_time
+                    FROM screenings s
+                    JOIN films f ON f.film_id = s.film_id
+                    """ + whereClause + """
+                    ORDER BY s.screening_time, s.screening_id
+                    LIMIT ? OFFSET ?
+                    """;
+
+            try {
+                long total;
+
+                try (PreparedStatement countStatement =
+                             connection.prepareStatement(countSql)) {
+
+                    filterBinder.bind(countStatement);
+
+                    try (ResultSet resultSet = countStatement.executeQuery()) {
+                        resultSet.next();
+                        total = resultSet.getLong(1);
+                    }
+                }
+
+                List<Screening> screenings = new ArrayList<>();
+
+                try (PreparedStatement dataStatement =
+                             connection.prepareStatement(dataSql)) {
+
+                    filterBinder.bind(dataStatement);
+
+                    int parameterIndex = whereClause.isEmpty()
+                            ? 1
+                            : countParameters(whereClause) + 1;
+
+                    dataStatement.setInt(parameterIndex, perPage);
+                    dataStatement.setInt(parameterIndex + 1, offset);
+
+                    try (ResultSet resultSet = dataStatement.executeQuery()) {
+                        while (resultSet.next()) {
+                            screenings.add(mapScreening(resultSet));
+                        }
+                    }
+                }
+
+                return new Page<>(page, perPage, total, screenings);
+
+            } catch (SQLException exception) {
+                throw new RepositoryException(errorMessage, exception);
+            }
+        });
+    }
+
+    // Counts the placeholders in the repository's fixed WHERE clauses.
+    private int countParameters(String whereClause) {
+        int count = 0;
+
+        for (int i = 0; i < whereClause.length(); i++) {
+            if (whereClause.charAt(i) == '?') {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     // Retrieves a screening using an existing database connection.
@@ -341,5 +408,10 @@ public final class SqliteScreeningRepository implements ScreeningRepository {
     @FunctionalInterface
     private interface SqlFunction<T> {
         T apply(Connection connection) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface SqlStatementBinder {
+        void bind(PreparedStatement statement) throws SQLException;
     }
 }
