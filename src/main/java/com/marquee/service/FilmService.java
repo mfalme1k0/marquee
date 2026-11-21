@@ -1,4 +1,3 @@
-
 package com.marquee.service;
 
 import com.marquee.exceptions.FilmNotFoundException;
@@ -23,7 +22,7 @@ public final class FilmService {
     private final FilmRepository filmRepository;
     private final GenreRepository genreRepository;
 
-   //creates film service with its required repos
+    //creates film service with its required repos
     public FilmService(
             FilmRepository filmRepository,
             GenreRepository genreRepository
@@ -57,7 +56,7 @@ public final class FilmService {
         return filmRepository.createFilm(newFilm);
     }
 
-  //retrieve film using its id
+    //retrieve film using its id
     public Film getFilmById(long filmId) {
 
         validateId(filmId, "Film ID");
@@ -68,31 +67,93 @@ public final class FilmService {
                 );
     }
 
-  //retrieve a list of films
+    //retrieve a list of films
     public Page<Film> getAllFilms(int page, int perPage) {
 
-        List<String> errors = new ArrayList<>();
-
-        if (page < 1) {
-            errors.add("Page must be greater than zero");
-        }
-
-        if (perPage < 1) {
-            errors.add("perPage must be greater than zero");
-        }
-
-        if (perPage > 100) {
-            errors.add("perPage must not exceed 100");
-        }
-
-        if (!errors.isEmpty()) {
-            throw new ValidationException(errors);
-        }
+        validatePagination(page, perPage);
 
         return filmRepository.findAllFilms(page, perPage);
     }
 
-   //update an existing film
+    //retrieve a page of films whose title matches the search text
+    public Page<Film> getFilmsByTitle(
+            String title,
+            int page,
+            int perPage
+    ) {
+
+        if (title == null || title.isBlank()) {
+            throw new ValidationException(
+                    List.of("Title is required")
+            );
+        }
+
+        if (title.trim().length() > 255) {
+            throw new ValidationException(
+                    List.of("Title must not exceed 255 characters")
+            );
+        }
+
+        validatePagination(page, perPage);
+
+        return filmRepository.findFilmsByTitle(title.trim(), page, perPage);
+    }
+
+    //retrieve a page of films released in a given year
+    public Page<Film> getFilmsByYear(int year, int page, int perPage) {
+
+        if (year < 1) {
+            throw new ValidationException(
+                    List.of("Year must be a positive integer")
+            );
+        }
+
+        validatePagination(page, perPage);
+
+        return filmRepository.findFilmsByYear(year, page, perPage);
+    }
+
+    //retrieve a page of films that belong to a genre (by id)
+    public Page<Film> getFilmsByGenreId(
+            long genreId,
+            int page,
+            int perPage
+    ) {
+
+        validateId(genreId, "Genre ID");
+        validatePagination(page, perPage);
+
+        return filmRepository.findFilmsByGenreId(genreId, page, perPage);
+    }
+
+    //retrieve a page of films that belong to a genre (by name).
+    //an unknown genre simply matches nothing: empty page, not an error
+    public Page<Film> getFilmsByGenreName(
+            String genreName,
+            int page,
+            int perPage
+    ) {
+
+        if (genreName == null || genreName.isBlank()) {
+            throw new ValidationException(
+                    List.of("Genre name is required")
+            );
+        }
+
+        validatePagination(page, perPage);
+
+        return genreRepository.findGenreByName(genreName.trim())
+                .map(genre ->
+                        filmRepository.findFilmsByGenreId(
+                                genre.genreId(),
+                                page,
+                                perPage
+                        )
+                )
+                .orElseGet(() -> new Page<>(page, perPage, 0, List.of()));
+    }
+
+    //update an existing film
     public Film updateFilm(long filmId, Film film) {
 
         validateId(filmId, "Film ID");
@@ -111,7 +172,7 @@ public final class FilmService {
         return filmRepository.updateFilm(filmId, updatedFilm);
     }
 
-   //delete a film
+    //delete a film
     public boolean deleteFilm(long filmId) {
 
         validateId(filmId, "Film ID");
@@ -119,7 +180,28 @@ public final class FilmService {
         return filmRepository.deleteFilmById(filmId);
     }
 
-//validate basic film information
+    //assigns a genre to a film.
+    //true = association created, false = film already has this genre.
+    //unknown film or genre is reported by the repository as not found
+    public boolean assignGenreToFilm(long filmId, long genreId) {
+
+        validateId(filmId, "Film ID");
+        validateId(genreId, "Genre ID");
+
+        return filmRepository.addGenreToFilm(filmId, genreId);
+    }
+
+    //removes a genre from a film.
+    //true = association removed, false = film did not have this genre
+    public boolean removeGenreFromFilm(long filmId, long genreId) {
+
+        validateId(filmId, "Film ID");
+        validateId(genreId, "Genre ID");
+
+        return filmRepository.removeGenreFromFilm(filmId, genreId);
+    }
+
+    //validate basic film information
     private void validateFilm(Film film) {
 
         if (film == null) {
@@ -201,6 +283,28 @@ public final class FilmService {
         }
     }
 
+    //validates page and page size
+    private void validatePagination(int page, int perPage) {
+
+        List<String> errors = new ArrayList<>();
+
+        if (page < 1) {
+            errors.add("Page must be greater than zero");
+        }
+
+        if (perPage < 1) {
+            errors.add("perPage must be greater than zero");
+        }
+
+        if (perPage > 100) {
+            errors.add("perPage must not exceed 100");
+        }
+
+        if (!errors.isEmpty()) {
+            throw new ValidationException(errors);
+        }
+    }
+
     //validates positive database identifiers
     private void validateId(long id, String fieldName) {
 
@@ -211,12 +315,12 @@ public final class FilmService {
         }
     }
 
-   //removes whitespace
+    //removes whitespace
     private String normalizeTitle(String title) {
         return title.trim();
     }
 
- //nulls blank descriptions
+    //nulls blank descriptions
     private String normalizeDescription(String description) {
 
         if (description == null || description.isBlank()) {
