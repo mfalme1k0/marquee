@@ -201,13 +201,7 @@ public final class ScreeningService {
     }
 
     //checks if referenced film exists
-    private void validateFilmExists(Long filmId) {
-
-        if (filmId == null || filmId <= 0) {
-            throw new ValidationException(
-                    List.of("Film ID must be greater than zero")
-            );
-        }
+    private void validateFilmExists(long filmId) {
 
         if (filmRepository.findFilmById(filmId).isEmpty()) {
             throw new FilmNotFoundException(filmId);
