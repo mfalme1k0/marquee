@@ -231,10 +231,6 @@ public final class FilmService {
             );
         }
 
-        if (film.genres() == null) {
-            errors.add("Genres must not be null");
-        }
-
         if (!errors.isEmpty()) {
             throw new ValidationException(errors);
         }
@@ -243,19 +239,10 @@ public final class FilmService {
 
     private void validateGenres(List<Genre> genres) {
 
-        if (genres == null) {
-            return;
-        }
-
         List<String> errors = new ArrayList<>();
         Set<Long> genreIds = new HashSet<>();
 
         for (Genre genre : genres) {
-
-            if (genre == null) {
-                errors.add("Genre must not be null");
-                continue;
-            }
 
             if (genre.genreId() == null || genre.genreId() <= 0) {
                 errors.add(
