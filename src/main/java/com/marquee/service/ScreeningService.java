@@ -1,14 +1,15 @@
-
 package com.marquee.service;
 
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.ScreeningNotFoundException;
 import com.marquee.exceptions.ValidationException;
+import com.marquee.model.Page;
 import com.marquee.model.Screening;
 import com.marquee.repository.FilmRepository;
 import com.marquee.repository.ScreeningRepository;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,11 +19,12 @@ import java.util.Objects;
 public final class ScreeningService {
 
     private static final int MAX_VENUE_LENGTH = 255;
+    private static final int MAX_PER_PAGE = 100;
 
     private final ScreeningRepository screeningRepository;
     private final FilmRepository filmRepository;
 
-   //create screening service with the required repos
+    //create screening service with the required repos
     public ScreeningService(
             ScreeningRepository screeningRepository,
             FilmRepository filmRepository
@@ -38,7 +40,7 @@ public final class ScreeningService {
         );
     }
 
-   //create a new screening
+    //create a new screening
     public Screening createScreening(Screening screening) {
 
         validateScreening(screening);
@@ -55,7 +57,7 @@ public final class ScreeningService {
         return screeningRepository.createScreening(newScreening);
     }
 
- //retrieve screening by id
+    //retrieve screening by id
     public Screening getScreeningById(long screeningId) {
 
         validateId(screeningId, "Screening ID");
@@ -66,31 +68,67 @@ public final class ScreeningService {
                 );
     }
 
-   //get all screenings
-    public List<Screening> getAllScreenings() {
-        return screeningRepository.findAllScreenings();
+    //get a page of screenings
+    public Page<Screening> getAllScreenings(int page, int perPage) {
+
+        validatePagination(page, perPage);
+
+        return screeningRepository.findAllScreenings(page, perPage);
     }
 
-   //get screenings of a film
-    public List<Screening> getScreeningsByFilmId(long filmId) {
+    //get a page of screenings of a film
+    public Page<Screening> getScreeningsByFilmId(
+            long filmId,
+            int page,
+            int perPage
+    ) {
 
         validateId(filmId, "Film ID");
+        validatePagination(page, perPage);
         validateFilmExists(filmId);
 
-        return screeningRepository.findScreeningsByFilmId(filmId);
-    }
-
- //get screenings of a particular venue
-    public List<Screening> getScreeningsByVenue(String venue) {
-
-        String normalizedVenue = validateAndNormalizeVenue(venue);
-
-        return screeningRepository.findScreeningsByVenue(
-                normalizedVenue
+        return screeningRepository.findScreeningsByFilmId(
+                filmId,
+                page,
+                perPage
         );
     }
 
-   //update existing screening
+    //get a page of screenings of a particular venue
+    public Page<Screening> getScreeningsByVenue(
+            String venue,
+            int page,
+            int perPage
+    ) {
+
+        String normalizedVenue = validateAndNormalizeVenue(venue);
+        validatePagination(page, perPage);
+
+        return screeningRepository.findScreeningsByVenue(
+                normalizedVenue,
+                page,
+                perPage
+        );
+    }
+
+    //get a page of screenings on a given date (yyyy-MM-dd)
+    public Page<Screening> getScreeningsByDate(
+            String date,
+            int page,
+            int perPage
+    ) {
+
+        LocalDate parsedDate = validateAndParseDate(date);
+        validatePagination(page, perPage);
+
+        return screeningRepository.findScreeningsByDate(
+                parsedDate,
+                page,
+                perPage
+        );
+    }
+
+    //update existing screening
     public Screening updateScreening(
             long screeningId,
             Screening screening
@@ -114,7 +152,7 @@ public final class ScreeningService {
         );
     }
 
-   //delete a screening
+    //delete a screening
     public boolean deleteScreening(long screeningId) {
 
         validateId(screeningId, "Screening ID");
@@ -122,7 +160,7 @@ public final class ScreeningService {
         return screeningRepository.deleteScreeningById(screeningId);
     }
 
-   //validate required fields
+    //validate required fields
     private void validateScreening(Screening screening) {
 
         if (screening == null) {
@@ -162,7 +200,7 @@ public final class ScreeningService {
         }
     }
 
-   //checks if referenced film exists
+    //checks if referenced film exists
     private void validateFilmExists(Long filmId) {
 
         if (filmId == null || filmId <= 0) {
@@ -200,12 +238,12 @@ public final class ScreeningService {
         return normalizedVenue;
     }
 
-  //removes leading and trailing whitespaces
+    //removes leading and trailing whitespaces
     private String normalizeVenue(String venue) {
         return venue.trim();
     }
 
-   //validate utc timestamp
+    //validate utc timestamp
     private boolean isValidUtcTimestamp(String timestamp) {
 
         try {
@@ -216,12 +254,52 @@ public final class ScreeningService {
         }
     }
 
-   //normalize a valid utc timestamp
+    //normalize a valid utc timestamp
     private String normalizeTimestamp(String timestamp) {
         return Instant.parse(timestamp).toString();
     }
 
-   //validates positive database identifier
+    //validates page and page size
+    private void validatePagination(int page, int perPage) {
+
+        List<String> errors = new ArrayList<>();
+
+        if (page < 1) {
+            errors.add("Page must be greater than zero");
+        }
+
+        if (perPage < 1) {
+            errors.add("perPage must be greater than zero");
+        }
+
+        if (perPage > MAX_PER_PAGE) {
+            errors.add("perPage must not exceed " + MAX_PER_PAGE);
+        }
+
+        if (!errors.isEmpty()) {
+            throw new ValidationException(errors);
+        }
+    }
+
+    //parses a date filter in yyyy-MM-dd format
+    private LocalDate validateAndParseDate(String date) {
+
+        if (date == null || date.isBlank()) {
+            throw new ValidationException(
+                    List.of("Date is required")
+            );
+        }
+
+        try {
+            return LocalDate.parse(date.trim());
+        } catch (DateTimeParseException exception) {
+            throw new ValidationException(
+                    List.of("Date must be in yyyy-MM-dd format")
+            );
+        }
+    }
+
+    //validates positive database identifier
     private void validateId(long id, String fieldName) {
 
         if (id <= 0) {

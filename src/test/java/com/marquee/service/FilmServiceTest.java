@@ -1,4 +1,3 @@
-
 package com.marquee.service;
 
 import com.marquee.exceptions.DuplicateGenreException;
@@ -710,6 +709,33 @@ class FilmServiceTest {
         @Override
         public boolean deleteFilmById(long filmId) {
             return films.remove(filmId) != null;
+        }
+
+        // Not used by FilmService yet; present to satisfy the interface.
+
+        @Override
+        public Page<Film> findFilmsByTitle(String title, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Page<Film> findFilmsByYear(int year, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Page<Film> findFilmsByGenreId(long genreId, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean addGenreToFilm(long filmId, long genreId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean removeGenreFromFilm(long filmId, long genreId) {
+            throw new UnsupportedOperationException();
         }
     }
 
