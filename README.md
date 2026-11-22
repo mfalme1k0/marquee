@@ -18,7 +18,7 @@ curl http://localhost:8080/films
 The database file is created and the schema applied on first run. To load sample data:
 
 ```bash
-sqlite3 marquee.db < db/seed.sql
+sqlite3 marquee.db < src/main/resources/seed.sql
 ```
 
 ## Architecture
