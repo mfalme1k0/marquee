@@ -1,4 +1,3 @@
-
 package com.marquee.service;
 
 import com.marquee.exceptions.DuplicateGenreException;
@@ -35,6 +34,7 @@ class FilmServiceTest {
     void setUp() {
         filmRepository = new FakeFilmRepository();
         genreRepository = new FakeGenreRepository();
+        filmRepository.genreRepository = genreRepository;
 
         filmService = new FilmService(
                 filmRepository,
@@ -624,6 +624,393 @@ class FilmServiceTest {
     }
 
     // ---------------------------------------------------------
+    // HELPERS FOR FILTER AND GENRE-ASSIGNMENT TESTS
+    // ---------------------------------------------------------
+
+    private Genre addGenre(String name) {
+        return genreRepository.createGenre(new Genre(null, name));
+    }
+
+    private Film addFilm(String title, int year, Genre... genres) {
+        return filmService.createFilm(
+                new Film(null, title, year, null, null, List.of(genres))
+        );
+    }
+
+    // ---------------------------------------------------------
+    // SEARCH BY TITLE
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldFindFilmsByTitle() {
+        addFilm("Inception", 2010);
+        addFilm("The Matrix", 1999);
+
+        Page<Film> result = filmService.getFilmsByTitle("incep", 1, 20);
+
+        assertEquals(1, result.items().size());
+        assertEquals(1, result.total());
+        assertEquals("Inception", result.items().getFirst().title());
+    }
+
+    @Test
+    void shouldTrimTitleWhenSearching() {
+        addFilm("The Matrix", 1999);
+
+        assertEquals(
+                1,
+                filmService.getFilmsByTitle("  Matrix  ", 1, 20).items().size()
+        );
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoTitleMatches() {
+        addFilm("Inception", 2010);
+
+        Page<Film> result = filmService.getFilmsByTitle("Alien", 1, 20);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(0, result.total());
+    }
+
+    @Test
+    void shouldRejectNullTitleWhenSearching() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByTitle(null, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectBlankTitleWhenSearching() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByTitle("   ", 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectTitleLongerThanMaximumWhenSearching() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByTitle("A".repeat(256), 1, 20)
+        );
+    }
+
+    @Test
+    void shouldAcceptTitleAtMaximumLengthWhenSearching() {
+        assertDoesNotThrow(
+                () -> filmService.getFilmsByTitle("A".repeat(255), 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenSearchingByTitle() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByTitle("Matrix", 0, 20)
+        );
+    }
+
+    // ---------------------------------------------------------
+    // FILTER BY YEAR
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldFindFilmsByYear() {
+        addFilm("Inception", 2010);
+        addFilm("The Matrix", 1999);
+
+        Page<Film> result = filmService.getFilmsByYear(2010, 1, 20);
+
+        assertEquals(1, result.items().size());
+        assertEquals("Inception", result.items().getFirst().title());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoFilmInYear() {
+        addFilm("Inception", 2010);
+
+        Page<Film> result = filmService.getFilmsByYear(2000, 1, 20);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(0, result.total());
+    }
+
+    @Test
+    void shouldAcceptYearEarlierThanFirstFilmWhenFiltering() {
+        Page<Film> result = filmService.getFilmsByYear(1800, 1, 20);
+
+        assertTrue(result.items().isEmpty());
+    }
+
+    @Test
+    void shouldRejectZeroYearWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByYear(0, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectNegativeYearWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByYear(-2010, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByYear() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByYear(2010, 1, 101)
+        );
+    }
+
+    // ---------------------------------------------------------
+    // FILTER BY GENRE ID
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldFindFilmsByGenreId() {
+        Genre action = addGenre("Action");
+        addFilm("Die Hard", 1988, action);
+        addFilm("Amelie", 2001);
+
+        Page<Film> result =
+                filmService.getFilmsByGenreId(action.genreId(), 1, 20);
+
+        assertEquals(1, result.items().size());
+        assertEquals("Die Hard", result.items().getFirst().title());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenGenreHasNoFilms() {
+        Genre horror = addGenre("Horror");
+
+        Page<Film> result =
+                filmService.getFilmsByGenreId(horror.genreId(), 1, 20);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(0, result.total());
+    }
+
+    @Test
+    void shouldRejectZeroGenreIdWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreId(0, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectNegativeGenreIdWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreId(-1, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByGenreId() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreId(1, 1, 0)
+        );
+    }
+
+    // ---------------------------------------------------------
+    // FILTER BY GENRE NAME
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldFindFilmsByGenreName() {
+        Genre action = addGenre("Action");
+        addFilm("Die Hard", 1988, action);
+        addFilm("Amelie", 2001);
+
+        Page<Film> result = filmService.getFilmsByGenreName("Action", 1, 20);
+
+        assertEquals(1, result.items().size());
+        assertEquals("Die Hard", result.items().getFirst().title());
+    }
+
+    @Test
+    void shouldTrimGenreNameWhenFiltering() {
+        Genre action = addGenre("Action");
+        addFilm("Die Hard", 1988, action);
+
+        assertEquals(
+                1,
+                filmService.getFilmsByGenreName("  Action  ", 1, 20)
+                        .items().size()
+        );
+    }
+
+    @Test
+    void shouldReturnEmptyPageForUnknownGenreName() {
+        addFilm("Amelie", 2001);
+
+        Page<Film> result = filmService.getFilmsByGenreName("Horror", 2, 10);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(0, result.total());
+        assertEquals(2, result.page());
+        assertEquals(10, result.perPage());
+    }
+
+    @Test
+    void shouldRejectNullGenreNameWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreName(null, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectBlankGenreNameWhenFiltering() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreName("  ", 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByGenreName() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.getFilmsByGenreName("Action", 0, 20)
+        );
+    }
+
+    // ---------------------------------------------------------
+    // ASSIGN GENRE TO FILM
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldAssignGenreToFilm() {
+        Genre action = addGenre("Action");
+        Film film = addFilm("Die Hard", 1988);
+
+        assertTrue(filmService.assignGenreToFilm(film.filmId(), action.genreId()));
+
+        assertEquals(
+                List.of(action),
+                filmService.getFilmById(film.filmId()).genres()
+        );
+    }
+
+    @Test
+    void shouldReturnFalseWhenGenreAlreadyAssigned() {
+        Genre action = addGenre("Action");
+        Film film = addFilm("Die Hard", 1988, action);
+
+        assertFalse(filmService.assignGenreToFilm(film.filmId(), action.genreId()));
+        assertEquals(
+                1,
+                filmService.getFilmById(film.filmId()).genres().size()
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidFilmIdWhenAssigningGenre() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.assignGenreToFilm(0, 1)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidGenreIdWhenAssigningGenre() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.assignGenreToFilm(1, -1)
+        );
+    }
+
+    @Test
+    void shouldThrowWhenAssigningGenreToUnknownFilm() {
+        Genre action = addGenre("Action");
+
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> filmService.assignGenreToFilm(999, action.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowWhenAssigningUnknownGenre() {
+        Film film = addFilm("Die Hard", 1988);
+
+        assertThrows(
+                GenreNotFoundException.class,
+                () -> filmService.assignGenreToFilm(film.filmId(), 999)
+        );
+    }
+
+    // ---------------------------------------------------------
+    // REMOVE GENRE FROM FILM
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldRemoveGenreFromFilm() {
+        Genre action = addGenre("Action");
+        Film film = addFilm("Die Hard", 1988, action);
+
+        assertTrue(
+                filmService.removeGenreFromFilm(film.filmId(), action.genreId())
+        );
+        assertTrue(filmService.getFilmById(film.filmId()).genres().isEmpty());
+    }
+
+    @Test
+    void shouldReturnFalseWhenGenreWasNotAssigned() {
+        Genre action = addGenre("Action");
+        Film film = addFilm("Die Hard", 1988);
+
+        assertFalse(
+                filmService.removeGenreFromFilm(film.filmId(), action.genreId())
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidFilmIdWhenRemovingGenre() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.removeGenreFromFilm(0, 1)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidGenreIdWhenRemovingGenre() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.removeGenreFromFilm(1, 0)
+        );
+    }
+
+    @Test
+    void shouldThrowWhenRemovingGenreFromUnknownFilm() {
+        Genre action = addGenre("Action");
+
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> filmService.removeGenreFromFilm(999, action.genreId())
+        );
+    }
+
+    @Test
+    void shouldThrowWhenRemovingUnknownGenre() {
+        Film film = addFilm("Die Hard", 1988);
+
+        assertThrows(
+                GenreNotFoundException.class,
+                () -> filmService.removeGenreFromFilm(film.filmId(), 999)
+        );
+    }
+
+    // ---------------------------------------------------------
     // IN-MEMORY FILM REPOSITORY
     // ---------------------------------------------------------
 
@@ -636,6 +1023,9 @@ class FilmServiceTest {
         private long nextId = 1;
 
         private Film lastCreatedFilm;
+
+        // Set by the test so assign/remove can check genres exist.
+        private GenreRepository genreRepository;
 
         @Override
         public Film createFilm(Film film) {
@@ -710,6 +1100,97 @@ class FilmServiceTest {
         @Override
         public boolean deleteFilmById(long filmId) {
             return films.remove(filmId) != null;
+        }
+
+        @Override
+        public Page<Film> findFilmsByTitle(String title, int page, int perPage) {
+            return pageOf(
+                    films.values().stream()
+                            .filter(f -> f.title().toLowerCase()
+                                    .contains(title.toLowerCase()))
+                            .toList(),
+                    page,
+                    perPage
+            );
+        }
+
+        @Override
+        public Page<Film> findFilmsByYear(int year, int page, int perPage) {
+            return pageOf(
+                    films.values().stream()
+                            .filter(f -> f.year() == year)
+                            .toList(),
+                    page,
+                    perPage
+            );
+        }
+
+        @Override
+        public Page<Film> findFilmsByGenreId(long genreId, int page, int perPage) {
+            return pageOf(
+                    films.values().stream()
+                            .filter(f -> f.genres().stream()
+                                    .anyMatch(g -> g.genreId() == genreId))
+                            .toList(),
+                    page,
+                    perPage
+            );
+        }
+
+        // Mirrors the real repository: missing film or genre -> not found,
+        // already assigned -> false, otherwise the association is created.
+        @Override
+        public boolean addGenreToFilm(long filmId, long genreId) {
+            Film film = requireFilm(filmId);
+            Genre genre = requireGenre(genreId);
+
+            if (film.genres().stream().anyMatch(g -> g.genreId() == genreId)) {
+                return false;
+            }
+
+            List<Genre> updated = new ArrayList<>(film.genres());
+            updated.add(genre);
+            films.put(filmId, film.withGenres(updated));
+
+            return true;
+        }
+
+        // Missing film or genre -> not found, not assigned -> false.
+        @Override
+        public boolean removeGenreFromFilm(long filmId, long genreId) {
+            Film film = requireFilm(filmId);
+            requireGenre(genreId);
+
+            List<Genre> updated = new ArrayList<>(film.genres());
+            boolean removed = updated.removeIf(g -> g.genreId() == genreId);
+
+            if (removed) {
+                films.put(filmId, film.withGenres(updated));
+            }
+
+            return removed;
+        }
+
+        private Film requireFilm(long filmId) {
+            Film film = films.get(filmId);
+
+            if (film == null) {
+                throw new FilmNotFoundException(filmId);
+            }
+
+            return film;
+        }
+
+        private Genre requireGenre(long genreId) {
+            return genreRepository.findGenreById(genreId)
+                    .orElseThrow(() -> new GenreNotFoundException(genreId));
+        }
+
+        private static Page<Film> pageOf(List<Film> all, int page, int perPage) {
+            int from = Math.min(Page.offset(page, perPage), all.size());
+            int to = Math.min(from + perPage, all.size());
+
+            return new Page<>(page, perPage, all.size(), all.subList(from, to));
         }
     }
 

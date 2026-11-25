@@ -1,4 +1,3 @@
-
 package com.marquee.service;
 
 import com.marquee.exceptions.FilmNotFoundException;
@@ -12,6 +11,7 @@ import com.marquee.repository.ScreeningRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -254,34 +254,125 @@ class ScreeningServiceTest {
         );
     }
 
+    // ---- list all (paginated) ---------------------------------------------
+
     @Test
     void shouldReturnAllScreenings() {
         createValidScreening();
         createValidScreening();
 
-        assertEquals(2, service.getAllScreenings().size());
+        Page<Screening> result = service.getAllScreenings(1, 20);
+
+        assertEquals(2, result.items().size());
+        assertEquals(2, result.total());
+        assertEquals(1, result.page());
+        assertEquals(20, result.perPage());
     }
 
     @Test
-    void shouldReturnEmptyListWhenNoScreeningsExist() {
-        assertTrue(service.getAllScreenings().isEmpty());
+    void shouldReturnEmptyPageWhenNoScreeningsExist() {
+        Page<Screening> result = service.getAllScreenings(1, 20);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(0, result.total());
     }
+
+    @Test
+    void shouldReturnRequestedPageOfScreenings() {
+        createValidScreening();
+        createValidScreening();
+        createValidScreening();
+
+        Page<Screening> second = service.getAllScreenings(2, 2);
+
+        assertEquals(1, second.items().size());
+        assertEquals(3, second.total());
+        assertEquals(2, second.page());
+    }
+
+    @Test
+    void shouldReturnEmptyItemsWhenPageIsBeyondLastPage() {
+        createValidScreening();
+
+        Page<Screening> result = service.getAllScreenings(5, 20);
+
+        assertTrue(result.items().isEmpty());
+        assertEquals(1, result.total());
+    }
+
+    @Test
+    void shouldRejectZeroPage() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getAllScreenings(0, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectNegativePage() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getAllScreenings(-1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectZeroPerPage() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getAllScreenings(1, 0)
+        );
+    }
+
+    @Test
+    void shouldRejectPerPageAboveMaximum() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getAllScreenings(1, 101)
+        );
+    }
+
+    @Test
+    void shouldAcceptPerPageAtMaximum() {
+        assertEquals(100, service.getAllScreenings(1, 100).perPage());
+    }
+
+    @Test
+    void shouldReportEveryPaginationProblemTogether() {
+        ValidationException exception = assertThrows(
+                ValidationException.class,
+                () -> service.getAllScreenings(0, 0)
+        );
+
+        assertEquals(2, exception.getDetails().size());
+    }
+
+    // ---- filter by film ---------------------------------------------------
 
     @Test
     void shouldFindScreeningsByFilmId() {
         createValidScreening();
 
-        List<Screening> results = service.getScreeningsByFilmId(1L);
+        Page<Screening> results = service.getScreeningsByFilmId(1L, 1, 20);
 
-        assertEquals(1, results.size());
-        assertEquals(1L, results.getFirst().filmId());
+        assertEquals(1, results.items().size());
+        assertEquals(1L, results.items().getFirst().filmId());
+        assertEquals(1, results.total());
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenFilmHasNoScreenings() {
+        Page<Screening> results = service.getScreeningsByFilmId(1L, 1, 20);
+
+        assertTrue(results.items().isEmpty());
+        assertEquals(0, results.total());
     }
 
     @Test
     void shouldRejectZeroFilmIdWhenFiltering() {
         assertThrows(
                 ValidationException.class,
-                () -> service.getScreeningsByFilmId(0)
+                () -> service.getScreeningsByFilmId(0, 1, 20)
         );
     }
 
@@ -289,7 +380,7 @@ class ScreeningServiceTest {
     void shouldRejectNegativeFilmIdWhenFiltering() {
         assertThrows(
                 ValidationException.class,
-                () -> service.getScreeningsByFilmId(-1)
+                () -> service.getScreeningsByFilmId(-1, 1, 20)
         );
     }
 
@@ -297,9 +388,19 @@ class ScreeningServiceTest {
     void shouldThrowWhenFilteringByUnknownFilm() {
         assertThrows(
                 FilmNotFoundException.class,
-                () -> service.getScreeningsByFilmId(999)
+                () -> service.getScreeningsByFilmId(999, 1, 20)
         );
     }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByFilm() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByFilmId(1L, 0, 20)
+        );
+    }
+
+    // ---- filter by venue --------------------------------------------------
 
     @Test
     void shouldFindScreeningsByVenue() {
@@ -307,7 +408,7 @@ class ScreeningServiceTest {
 
         assertEquals(
                 1,
-                service.getScreeningsByVenue("Cinema One").size()
+                service.getScreeningsByVenue("Cinema One", 1, 20).items().size()
         );
     }
 
@@ -317,15 +418,27 @@ class ScreeningServiceTest {
 
         assertEquals(
                 1,
-                service.getScreeningsByVenue("  Cinema One  ").size()
+                service.getScreeningsByVenue("  Cinema One  ", 1, 20)
+                        .items().size()
         );
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoScreeningMatchesVenue() {
+        createValidScreening();
+
+        Page<Screening> results =
+                service.getScreeningsByVenue("Rooftop", 1, 20);
+
+        assertTrue(results.items().isEmpty());
+        assertEquals(0, results.total());
     }
 
     @Test
     void shouldRejectNullVenueWhenFiltering() {
         assertThrows(
                 ValidationException.class,
-                () -> service.getScreeningsByVenue(null)
+                () -> service.getScreeningsByVenue(null, 1, 20)
         );
     }
 
@@ -333,7 +446,7 @@ class ScreeningServiceTest {
     void shouldRejectBlankVenueWhenFiltering() {
         assertThrows(
                 ValidationException.class,
-                () -> service.getScreeningsByVenue("  ")
+                () -> service.getScreeningsByVenue("  ", 1, 20)
         );
     }
 
@@ -341,7 +454,94 @@ class ScreeningServiceTest {
     void shouldRejectVenueLongerThanMaximumWhenFiltering() {
         assertThrows(
                 ValidationException.class,
-                () -> service.getScreeningsByVenue("A".repeat(256))
+                () -> service.getScreeningsByVenue("A".repeat(256), 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByVenue() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByVenue("Cinema One", 1, 0)
+        );
+    }
+
+    // ---- filter by date ---------------------------------------------------
+
+    @Test
+    void shouldFindScreeningsByDate() {
+        createValidScreening();
+        service.createScreening(
+                screening(null, 1L, "Cinema One", "2026-11-21T19:00:00Z")
+        );
+
+        Page<Screening> results =
+                service.getScreeningsByDate("2026-11-20", 1, 20);
+
+        assertEquals(1, results.items().size());
+        assertEquals(VALID_TIME, results.items().getFirst().screeningTime());
+        assertEquals(1, results.total());
+    }
+
+    @Test
+    void shouldTrimDateWhenFiltering() {
+        createValidScreening();
+
+        assertEquals(
+                1,
+                service.getScreeningsByDate("  2026-11-20  ", 1, 20)
+                        .items().size()
+        );
+    }
+
+    @Test
+    void shouldReturnEmptyPageWhenNoScreeningOnDate() {
+        createValidScreening();
+
+        Page<Screening> results =
+                service.getScreeningsByDate("2030-01-01", 1, 20);
+
+        assertTrue(results.items().isEmpty());
+        assertEquals(0, results.total());
+    }
+
+    @Test
+    void shouldRejectNullDate() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByDate(null, 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectBlankDate() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByDate("  ", 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectMalformedDate() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByDate("20/11/2026", 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectImpossibleCalendarDate() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByDate("2026-13-45", 1, 20)
+        );
+    }
+
+    @Test
+    void shouldRejectInvalidPaginationWhenFilteringByDate() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.getScreeningsByDate("2026-11-20", 0, 20)
         );
     }
 
@@ -512,22 +712,65 @@ class ScreeningServiceTest {
         }
 
         @Override
-        public List<Screening> findAllScreenings() {
-            return List.copyOf(screenings);
+        public Page<Screening> findAllScreenings(int page, int perPage) {
+            return pageOf(screenings, page, perPage);
         }
 
         @Override
-        public List<Screening> findScreeningsByFilmId(long filmId) {
-            return screenings.stream()
-                    .filter(s -> s.filmId() == filmId)
-                    .toList();
+        public Page<Screening> findScreeningsByFilmId(
+                long filmId,
+                int page,
+                int perPage
+        ) {
+            return pageOf(
+                    screenings.stream()
+                            .filter(s -> s.filmId() == filmId)
+                            .toList(),
+                    page,
+                    perPage
+            );
         }
 
         @Override
-        public List<Screening> findScreeningsByVenue(String venue) {
-            return screenings.stream()
-                    .filter(s -> s.venue().equalsIgnoreCase(venue))
-                    .toList();
+        public Page<Screening> findScreeningsByVenue(
+                String venue,
+                int page,
+                int perPage
+        ) {
+            return pageOf(
+                    screenings.stream()
+                            .filter(s -> s.venue().equalsIgnoreCase(venue))
+                            .toList(),
+                    page,
+                    perPage
+            );
+        }
+
+        @Override
+        public Page<Screening> findScreeningsByDate(
+                LocalDate date,
+                int page,
+                int perPage
+        ) {
+            return pageOf(
+                    screenings.stream()
+                            .filter(s -> s.screeningTime()
+                                    .startsWith(date.toString()))
+                            .toList(),
+                    page,
+                    perPage
+            );
+        }
+
+        private static <T> Page<T> pageOf(
+                List<T> all,
+                int page,
+                int perPage
+        ) {
+            int from = Math.min(Page.offset(page, perPage), all.size());
+            int to = Math.min(from + perPage, all.size());
+
+            return new Page<>(page, perPage, all.size(), all.subList(from, to));
         }
 
         @Override
@@ -603,6 +846,33 @@ class ScreeningServiceTest {
         @Override
         public boolean deleteFilmById(long filmId) {
             return films.removeIf(f -> f.filmId() == filmId);
+        }
+
+        // Not used by ScreeningService; present to satisfy the interface.
+
+        @Override
+        public Page<Film> findFilmsByTitle(String title, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Page<Film> findFilmsByYear(int year, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Page<Film> findFilmsByGenreId(long genreId, int page, int perPage) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean addGenreToFilm(long filmId, long genreId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean removeGenreFromFilm(long filmId, long genreId) {
+            throw new UnsupportedOperationException();
         }
     }
 }
