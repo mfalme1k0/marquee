@@ -1,5 +1,6 @@
 package com.marquee.http;
 
+import com.marquee.logging.AppLogger;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
@@ -14,6 +15,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /** An explicit method/path router for the JDK HTTP server; no framework routing. */
 public final class Router implements HttpHandler {
+    private final AppLogger log;
+
+    public Router(AppLogger log) {
+        this.log = log;
+    }
     private final List<Route> routes = new CopyOnWriteArrayList<>();
 
     /** Dynamic path segments use braces, e.g. {@code /films/{filmId}}. */
