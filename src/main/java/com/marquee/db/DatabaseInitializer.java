@@ -48,6 +48,32 @@ public final class DatabaseInitializer {
                 throw exception;
             }
         }
+
+        ensureLogInfrastructure();
+    }
+
+    private void ensureLogInfrastructure() throws SQLException {
+        String createTable = """
+            CREATE TABLE IF NOT EXISTS log_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at   TEXT    NOT NULL,
+                level         TEXT    NOT NULL,
+                event         TEXT    NOT NULL,
+                context_json  TEXT    NOT NULL,
+                user_id       INTEGER
+            )
+            """;
+
+        String createIndex = """
+            CREATE INDEX IF NOT EXISTS idx_log_events_occurred_at
+                ON log_events (occurred_at)
+            """;
+
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.execute(createTable);
+            statement.execute(createIndex);
+        }
     }
 
     // Reads the specified SQL resource (e.g., schema.sql or seed.sql) and returns its contents as a string.

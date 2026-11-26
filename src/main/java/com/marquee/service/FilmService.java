@@ -3,6 +3,7 @@ package com.marquee.service;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.ValidationException;
+import com.marquee.logging.AppLogger;
 import com.marquee.model.Film;
 import com.marquee.model.Genre;
 import com.marquee.model.Page;
@@ -12,6 +13,7 @@ import com.marquee.repository.GenreRepository;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -21,11 +23,13 @@ public final class FilmService {
 
     private final FilmRepository filmRepository;
     private final GenreRepository genreRepository;
+    private final AppLogger log;
 
     //creates film service with its required repos
     public FilmService(
             FilmRepository filmRepository,
-            GenreRepository genreRepository
+            GenreRepository genreRepository,
+            AppLogger log
     ) {
         this.filmRepository = Objects.requireNonNull(
                 filmRepository,
@@ -36,13 +40,26 @@ public final class FilmService {
                 genreRepository,
                 "GenreRepository must not be null"
         );
+
+        this.log = Objects.requireNonNull(
+                log,
+                "AppLogger must not be null"
+        );
     }
 
 
     public Film createFilm(Film film) {
 
-        validateFilm(film);
-        validateGenres(film.genres());
+        try {
+            validateFilm(film);
+            validateGenres(film.genres());
+        } catch (ValidationException | GenreNotFoundException e) {
+            log.warn(null, "film.create.rejected", Map.of(
+                    "reason", e.getClass().getSimpleName(),
+                    "title", String.valueOf(film != null ? film.title() : null)
+            ));
+            throw e;
+        }
 
         Film newFilm = new Film(
                 null,
@@ -53,7 +70,12 @@ public final class FilmService {
                 film.genres()
         );
 
-        return filmRepository.createFilm(newFilm);
+        Film created = filmRepository.createFilm(newFilm);
+        log.info(null, "film.created", Map.of(
+                "film_id", created.filmId(),
+                "title", created.title()
+        ));
+        return created;
     }
 
     //retrieve film using its id
@@ -62,9 +84,10 @@ public final class FilmService {
         validateId(filmId, "Film ID");
 
         return filmRepository.findFilmById(filmId)
-                .orElseThrow(() ->
-                        new FilmNotFoundException(filmId)
-                );
+                .orElseThrow(() -> {
+                    log.warn(null, "film.not_found", Map.of("film_id", filmId));
+                    return new FilmNotFoundException(filmId);
+                });
     }
 
     //retrieve a list of films
@@ -156,9 +179,17 @@ public final class FilmService {
     //update an existing film
     public Film updateFilm(long filmId, Film film) {
 
-        validateId(filmId, "Film ID");
-        validateFilm(film);
-        validateGenres(film.genres());
+        try {
+            validateId(filmId, "Film ID");
+            validateFilm(film);
+            validateGenres(film.genres());
+        } catch (ValidationException | GenreNotFoundException e) {
+            log.warn(null, "film.update.rejected", Map.of(
+                    "reason", e.getClass().getSimpleName(),
+                    "film_id", filmId
+            ));
+            throw e;
+        }
 
         Film updatedFilm = new Film(
                 filmId,
@@ -169,7 +200,12 @@ public final class FilmService {
                 film.genres()
         );
 
-        return filmRepository.updateFilm(filmId, updatedFilm);
+        Film updated = filmRepository.updateFilm(filmId, updatedFilm);
+        log.info(null, "film.updated", Map.of(
+                "film_id", updated.filmId(),
+                "title", updated.title()
+        ));
+        return updated;
     }
 
     //delete a film
@@ -177,7 +213,15 @@ public final class FilmService {
 
         validateId(filmId, "Film ID");
 
-        return filmRepository.deleteFilmById(filmId);
+        boolean deleted = filmRepository.deleteFilmById(filmId);
+
+        if (deleted) {
+            log.info(null, "film.deleted", Map.of("film_id", filmId));
+        } else {
+            log.warn(null, "film.delete.not_found", Map.of("film_id", filmId));
+        }
+
+        return deleted;
     }
 
     //assigns a genre to a film.
@@ -188,7 +232,22 @@ public final class FilmService {
         validateId(filmId, "Film ID");
         validateId(genreId, "Genre ID");
 
-        return filmRepository.addGenreToFilm(filmId, genreId);
+        boolean assigned = filmRepository.addGenreToFilm(filmId, genreId);
+
+        if (assigned) {
+            log.info(null, "film.genre.assigned", Map.of(
+                    "film_id", filmId,
+                    "genre_id", genreId
+            ));
+        } else {
+            log.warn(null, "film.genre.assign.rejected", Map.of(
+                    "reason", "already_assigned",
+                    "film_id", filmId,
+                    "genre_id", genreId
+            ));
+        }
+
+        return assigned;
     }
 
     //removes a genre from a film.
@@ -198,7 +257,22 @@ public final class FilmService {
         validateId(filmId, "Film ID");
         validateId(genreId, "Genre ID");
 
-        return filmRepository.removeGenreFromFilm(filmId, genreId);
+        boolean removed = filmRepository.removeGenreFromFilm(filmId, genreId);
+
+        if (removed) {
+            log.info(null, "film.genre.removed", Map.of(
+                    "film_id", filmId,
+                    "genre_id", genreId
+            ));
+        } else {
+            log.warn(null, "film.genre.remove.rejected", Map.of(
+                    "reason", "not_assigned",
+                    "film_id", filmId,
+                    "genre_id", genreId
+            ));
+        }
+
+        return removed;
     }
 
     //validate basic film information
