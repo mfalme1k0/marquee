@@ -53,11 +53,11 @@ docs/          API reference, design decisions, ER diagram
 
 ## Team
 
-| Name | Role | GitHub |
-|------|------|--------|
-| Fidel Shikokoti | Project lead | @CHANGE-ME-fidel |
-| Francis Kimani | Member | @CHANGE-ME-francis |
-| Jackson Macharia | Member | @CHANGE-ME-jackson |
+| Name | Role |
+|------|------|
+| Fidel Shikokoti | Project lead 
+| Francis Kimani | Member |
+| Jackson Macharia | Member | 
 
 ## Contributing
 

@@ -10,6 +10,7 @@ import com.marquee.db.DatabaseInitializer;
 import com.marquee.db.DatabaseManager;
 import com.marquee.db.transactions.TransactionManager;
 import com.marquee.http.Router;
+import com.marquee.logging.RecordingLogger;
 import com.marquee.repository.FilmRepository;
 import com.marquee.repository.GenreRepository;
 import com.marquee.repository.ScreeningRepository;
@@ -49,10 +50,11 @@ class ApiIntegrationTest {
         GenreRepository genreRepository = new SqliteGenreRepository(databaseManager, transactionManager);
         ScreeningRepository screeningRepository = new SqliteScreeningRepository(databaseManager, transactionManager);
 
-        Router router = new Router();
-        new FilmHandler(new FilmService(filmRepository, genreRepository)).registerRoutes(router);
-        new GenreHandler(new GenreService(genreRepository)).registerRoutes(router);
-        new ScreeningHandler(new ScreeningService(screeningRepository, filmRepository)).registerRoutes(router);
+        RecordingLogger logger = new RecordingLogger();
+        Router router = new Router(logger);
+        new FilmHandler(new FilmService(filmRepository, genreRepository, logger)).registerRoutes(router);
+        new GenreHandler(new GenreService(genreRepository, logger)).registerRoutes(router);
+        new ScreeningHandler(new ScreeningService(screeningRepository, filmRepository, logger)).registerRoutes(router);
 
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", router);
