@@ -10,11 +10,7 @@ public final class LoggingConfig {
 
     private LoggingConfig() {}
 
-    /**
-     * Initialises the logging subsystem. This method should be called before
-     * any other application code, so that even database‑initialisation errors
-     * are captured.
-     */
+
     public static void init() {
         // If you use Logback, the configuration is picked up from
         // src/main/resources/logback.xml. No extra code is needed here.
