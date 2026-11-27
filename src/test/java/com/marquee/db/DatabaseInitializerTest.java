@@ -184,6 +184,111 @@ class DatabaseInitializerTest {
         assertSame(rollbackException, thrownException.getSuppressed()[0]);
     }
 
+    // ---------------------------------------------------------
+    // LOG EVENTS INFRASTRUCTURE
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldCreateLogEventsTableAndIndex() throws Exception {
+        databaseInitializer.initialize();
+
+        assertTrue(tableExists("log_events"));
+        assertTrue(indexExists("idx_log_events_occurred_at"));
+    }
+
+    @Test
+    void shouldCreateLogEventsTableWithExpectedColumns() throws Exception {
+        databaseInitializer.initialize();
+
+        java.util.Map<String, Boolean> notNullByColumn = new java.util.LinkedHashMap<>();
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("PRAGMA table_info(log_events)")) {
+            while (resultSet.next()) {
+                notNullByColumn.put(resultSet.getString("name"), resultSet.getInt("notnull") == 1);
+            }
+        }
+
+        assertEquals(
+                java.util.List.of("id", "occurred_at", "level", "event", "context_json", "user_id"),
+                java.util.List.copyOf(notNullByColumn.keySet())
+        );
+        assertTrue(notNullByColumn.get("occurred_at"));
+        assertTrue(notNullByColumn.get("level"));
+        assertTrue(notNullByColumn.get("event"));
+        assertTrue(notNullByColumn.get("context_json"));
+        assertFalse(notNullByColumn.get("user_id"), "user_id must be nullable: Marquee has no auth");
+    }
+
+    @Test
+    void shouldNotSeedLogEvents() throws Exception {
+        databaseInitializer.initialize();
+
+        assertEquals(0, countLogEvents());
+    }
+
+    @Test
+    void shouldKeepExistingLogEventsWhenInitializedAgain() throws Exception {
+        databaseInitializer.initialize();
+        insertLogEvent("app.starting");
+
+        databaseInitializer.initialize();
+
+        assertEquals(1, countLogEvents());
+    }
+
+    @Test
+    void shouldRecreateLogEventsTableOnDatabaseCreatedBeforeLogging() throws Exception {
+        databaseInitializer.initialize();
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.execute("DROP TABLE log_events");
+        }
+        assertFalse(tableExists("log_events"));
+
+        databaseInitializer.initialize();
+
+        assertTrue(tableExists("log_events"));
+        assertTrue(indexExists("idx_log_events_occurred_at"));
+    }
+
+    @Test
+    void shouldRejectLogEventWithoutEventName() throws Exception {
+        databaseInitializer.initialize();
+
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement()) {
+            assertThrows(
+                    SQLException.class,
+                    () -> statement.executeUpdate(
+                            "INSERT INTO log_events (occurred_at, level, event, context_json) "
+                                    + "VALUES ('2026-11-26T10:00:01', 'INFO', NULL, '{}')"
+                    )
+            );
+        }
+    }
+
+    private int countLogEvents() throws SQLException {
+        try (Connection connection = databaseManager.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT COUNT(*) FROM log_events")) {
+            assertTrue(resultSet.next());
+            return resultSet.getInt(1);
+        }
+    }
+
+    private void insertLogEvent(String event) throws SQLException {
+        try (Connection connection = databaseManager.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "INSERT INTO log_events (occurred_at, level, event, context_json) VALUES (?, ?, ?, ?)")) {
+            statement.setString(1, "2026-11-26T10:00:01");
+            statement.setString(2, "INFO");
+            statement.setString(3, event);
+            statement.setString(4, "{}");
+            statement.executeUpdate();
+        }
+    }
+
     private boolean tableExists(String tableName) throws SQLException {
         String sql = """
                 SELECT EXISTS (

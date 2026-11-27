@@ -4,6 +4,7 @@ package com.marquee.service;
 import com.marquee.exceptions.DuplicateGenreException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.ValidationException;
+import com.marquee.logging.RecordingLogger;
 import com.marquee.model.Genre;
 import com.marquee.repository.GenreRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,18 +20,20 @@ class GenreServiceTest {
 
     private FakeGenreRepository repository;
     private GenreService service;
+    private RecordingLogger logger;
 
     @BeforeEach
     void setUp() {
         repository = new FakeGenreRepository();
-        service = new GenreService(repository);
+        logger = new RecordingLogger();
+        service = new GenreService(repository, logger);
     }
 
     @Test
     void shouldRejectNullRepository() {
         assertThrows(
                 NullPointerException.class,
-                () -> new GenreService(null)
+                () -> new GenreService(null, logger)
         );
     }
 
@@ -273,6 +276,143 @@ class GenreServiceTest {
     @Test
     void shouldReturnFalseWhenDeletingNonexistentGenre() {
         assertFalse(service.deleteGenre(999));
+    }
+
+    // ---------------------------------------------------------
+    // LOGGING
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldRejectNullLogger() {
+        assertThrows(
+                NullPointerException.class,
+                () -> new GenreService(repository, null)
+        );
+    }
+
+    @Test
+    void shouldLogGenreCreated() {
+        Genre created = service.createGenre(genre(null, "  Drama  "));
+
+        RecordingLogger.Event event = logger.only("genre.created");
+        assertEquals("INFO", event.level());
+        assertNull(event.userId());
+        assertEquals(created.genreId(), event.context().get("genre_id"));
+        assertEquals("Drama", event.context().get("name"));
+        assertEquals(List.of("genre.created"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenGenreCreationFailsValidation() {
+        assertThrows(ValidationException.class, () -> service.createGenre(genre(null, "  ")));
+
+        RecordingLogger.Event event = logger.only("genre.create.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("validation_failed", event.context().get("reason"));
+        assertNotNull(event.context().get("details"));
+        assertEquals(List.of("genre.create.rejected"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenCreatingNullGenre() {
+        assertThrows(ValidationException.class, () -> service.createGenre(null));
+
+        assertEquals("validation_failed", logger.only("genre.create.rejected").context().get("reason"));
+    }
+
+    @Test
+    void shouldNotLogGenreCreatedWhenNameIsDuplicate() {
+        service.createGenre(genre(null, "Drama"));
+        logger.clear();
+
+        assertThrows(
+                DuplicateGenreException.class,
+                () -> service.createGenre(genre(null, "Drama"))
+        );
+
+        assertFalse(logger.eventNames().contains("genre.created"));
+    }
+
+    @Test
+    void shouldLogGenreUpdated() {
+        Genre created = service.createGenre(genre(null, "Drama"));
+        logger.clear();
+
+        service.updateGenre(created.genreId(), genre(null, "  Comedy "));
+
+        RecordingLogger.Event event = logger.only("genre.updated");
+        assertEquals("INFO", event.level());
+        assertEquals(created.genreId(), event.context().get("genre_id"));
+        assertEquals("Comedy", event.context().get("name"));
+    }
+
+    @Test
+    void shouldLogWarningWhenGenreUpdateFailsValidation() {
+        Genre created = service.createGenre(genre(null, "Drama"));
+        logger.clear();
+
+        assertThrows(
+                ValidationException.class,
+                () -> service.updateGenre(created.genreId(), genre(null, ""))
+        );
+
+        RecordingLogger.Event event = logger.only("genre.update.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("validation_failed", event.context().get("reason"));
+        assertEquals(created.genreId(), event.context().get("genre_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenGenreUpdateHasInvalidId() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.updateGenre(0, genre(null, "Drama"))
+        );
+
+        assertEquals(0L, logger.only("genre.update.rejected").context().get("genre_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenGenreIsNotFoundById() {
+        assertThrows(GenreNotFoundException.class, () -> service.getGenreById(77));
+
+        RecordingLogger.Event event = logger.only("genre.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(77L, event.context().get("genre_id"));
+    }
+
+    @Test
+    void shouldNotLogWhenGenreIsFoundOrListed() {
+        Genre created = service.createGenre(genre(null, "Drama"));
+        logger.clear();
+
+        service.getGenreById(created.genreId());
+        service.getAllGenres();
+
+        assertTrue(logger.isEmpty());
+    }
+
+    @Test
+    void shouldLogGenreDeleted() {
+        Genre created = service.createGenre(genre(null, "Drama"));
+        logger.clear();
+
+        assertTrue(service.deleteGenre(created.genreId()));
+
+        RecordingLogger.Event event = logger.only("genre.deleted");
+        assertEquals("INFO", event.level());
+        assertEquals(created.genreId(), event.context().get("genre_id"));
+        assertEquals(List.of("genre.deleted"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenDeletingMissingGenre() {
+        assertFalse(service.deleteGenre(999));
+
+        RecordingLogger.Event event = logger.only("genre.delete.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(999L, event.context().get("genre_id"));
+        assertEquals(List.of("genre.delete.not_found"), logger.eventNames());
     }
 
     private static Genre genre(Long id, String name) {

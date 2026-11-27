@@ -3,6 +3,7 @@ package com.marquee.service;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.ScreeningNotFoundException;
 import com.marquee.exceptions.ValidationException;
+import com.marquee.logging.RecordingLogger;
 import com.marquee.model.Film;
 import com.marquee.model.Page;
 import com.marquee.model.Screening;
@@ -23,11 +24,13 @@ class ScreeningServiceTest {
     private FakeScreeningRepository screeningRepository;
     private FakeFilmRepository filmRepository;
     private ScreeningService service;
+    private RecordingLogger logger;
 
     private static final String VALID_TIME = "2026-11-20T19:00:00Z";
 
     @BeforeEach
     void setUp() {
+        logger = new RecordingLogger();
         screeningRepository = new FakeScreeningRepository();
         filmRepository = new FakeFilmRepository();
 
@@ -35,14 +38,14 @@ class ScreeningServiceTest {
                 new Film(null, "The Matrix", 1999, null, null, List.of())
         );
 
-        service = new ScreeningService(screeningRepository, filmRepository);
+        service = new ScreeningService(screeningRepository, filmRepository, logger);
     }
 
     @Test
     void shouldRejectNullScreeningRepository() {
         assertThrows(
                 NullPointerException.class,
-                () -> new ScreeningService(null, filmRepository)
+                () -> new ScreeningService(null, filmRepository, logger)
         );
     }
 
@@ -50,7 +53,7 @@ class ScreeningServiceTest {
     void shouldRejectNullFilmRepository() {
         assertThrows(
                 NullPointerException.class,
-                () -> new ScreeningService(screeningRepository, null)
+                () -> new ScreeningService(screeningRepository, null, logger)
         );
     }
 
@@ -662,6 +665,178 @@ class ScreeningServiceTest {
     @Test
     void shouldReturnFalseWhenDeletingUnknownScreening() {
         assertFalse(service.deleteScreening(999));
+    }
+
+    // ---------------------------------------------------------
+    // LOGGING
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldRejectNullLogger() {
+        assertThrows(
+                NullPointerException.class,
+                () -> new ScreeningService(screeningRepository, filmRepository, null)
+        );
+    }
+
+    @Test
+    void shouldLogScreeningCreated() {
+        Screening created = service.createScreening(
+                screening(null, 1L, "  Cinema One ", VALID_TIME)
+        );
+
+        RecordingLogger.Event event = logger.only("screening.created");
+        assertEquals("INFO", event.level());
+        assertNull(event.userId());
+        assertEquals(created.screeningId(), event.context().get("screening_id"));
+        assertEquals(1L, event.context().get("film_id"));
+        assertEquals("Cinema One", event.context().get("venue"));
+        assertEquals(List.of("screening.created"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenScreeningCreationFailsValidation() {
+        assertThrows(
+                ValidationException.class,
+                () -> service.createScreening(screening(null, 1L, " ", VALID_TIME))
+        );
+
+        RecordingLogger.Event event = logger.only("screening.create.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("ValidationException", event.context().get("reason"));
+        assertEquals("1", event.context().get("film_id"));
+        assertEquals(List.of("screening.create.rejected"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenCreatingNullScreening() {
+        assertThrows(ValidationException.class, () -> service.createScreening(null));
+
+        assertEquals("null", logger.only("screening.create.rejected").context().get("film_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenScreeningCreationReferencesMissingFilm() {
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> service.createScreening(screening(null, 999L, "Cinema One", VALID_TIME))
+        );
+
+        RecordingLogger.Event event = logger.only("screening.create.rejected");
+        assertEquals("FilmNotFoundException", event.context().get("reason"));
+        assertEquals("999", event.context().get("film_id"));
+    }
+
+    @Test
+    void shouldLogScreeningUpdated() {
+        Screening created = createValidScreening();
+        logger.clear();
+
+        service.updateScreening(
+                created.screeningId(),
+                screening(null, 1L, "Cinema Two", VALID_TIME)
+        );
+
+        RecordingLogger.Event event = logger.only("screening.updated");
+        assertEquals("INFO", event.level());
+        assertEquals(created.screeningId(), event.context().get("screening_id"));
+        assertEquals(1L, event.context().get("film_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenScreeningUpdateFailsValidation() {
+        Screening created = createValidScreening();
+        logger.clear();
+
+        assertThrows(
+                ValidationException.class,
+                () -> service.updateScreening(
+                        created.screeningId(),
+                        screening(null, 1L, "Cinema Two", "not-a-time")
+                )
+        );
+
+        RecordingLogger.Event event = logger.only("screening.update.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("ValidationException", event.context().get("reason"));
+        assertEquals(created.screeningId(), event.context().get("screening_id"));
+        assertEquals("1", event.context().get("film_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenScreeningUpdateReferencesMissingFilm() {
+        Screening created = createValidScreening();
+        logger.clear();
+
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> service.updateScreening(
+                        created.screeningId(),
+                        screening(null, 999L, "Cinema Two", VALID_TIME)
+                )
+        );
+
+        assertEquals(
+                "FilmNotFoundException",
+                logger.only("screening.update.rejected").context().get("reason")
+        );
+    }
+
+    @Test
+    void shouldLogWarningWhenScreeningIsNotFoundById() {
+        assertThrows(ScreeningNotFoundException.class, () -> service.getScreeningById(55));
+
+        RecordingLogger.Event event = logger.only("screening.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(55L, event.context().get("screening_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenListingScreeningsForMissingFilm() {
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> service.getScreeningsByFilmId(999, 1, 10)
+        );
+
+        RecordingLogger.Event event = logger.only("screening.list_by_film.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("film_not_found", event.context().get("reason"));
+        assertEquals(999L, event.context().get("film_id"));
+    }
+
+    @Test
+    void shouldNotLogWhenScreeningsAreReadSuccessfully() {
+        Screening created = createValidScreening();
+        logger.clear();
+
+        service.getScreeningById(created.screeningId());
+        service.getScreeningsByFilmId(1, 1, 10);
+        service.getAllScreenings(1, 10);
+
+        assertTrue(logger.isEmpty());
+    }
+
+    @Test
+    void shouldLogScreeningDeleted() {
+        Screening created = createValidScreening();
+        logger.clear();
+
+        assertTrue(service.deleteScreening(created.screeningId()));
+
+        RecordingLogger.Event event = logger.only("screening.deleted");
+        assertEquals("INFO", event.level());
+        assertEquals(created.screeningId(), event.context().get("screening_id"));
+        assertEquals(List.of("screening.deleted"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenDeletingMissingScreening() {
+        assertFalse(service.deleteScreening(999));
+
+        RecordingLogger.Event event = logger.only("screening.delete.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(999L, event.context().get("screening_id"));
+        assertEquals(List.of("screening.delete.not_found"), logger.eventNames());
     }
 
     private Screening createValidScreening() {

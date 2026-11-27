@@ -4,6 +4,7 @@ import com.marquee.exceptions.DuplicateGenreException;
 import com.marquee.exceptions.FilmNotFoundException;
 import com.marquee.exceptions.GenreNotFoundException;
 import com.marquee.exceptions.ValidationException;
+import com.marquee.logging.RecordingLogger;
 import com.marquee.model.Film;
 import com.marquee.model.Genre;
 import com.marquee.model.Page;
@@ -26,6 +27,7 @@ class FilmServiceTest {
     private FakeFilmRepository filmRepository;
     private FakeGenreRepository genreRepository;
     private FilmService filmService;
+    private RecordingLogger logger;
 
     private static final String CREATED_AT =
             "2026-11-18T10:00:00Z";
@@ -36,9 +38,12 @@ class FilmServiceTest {
         genreRepository = new FakeGenreRepository();
         filmRepository.genreRepository = genreRepository;
 
+        logger = new RecordingLogger();
+
         filmService = new FilmService(
                 filmRepository,
-                genreRepository
+                genreRepository,
+                logger
         );
     }
 
@@ -49,7 +54,7 @@ class FilmServiceTest {
     @Test
     void shouldCreateServiceWithValidRepositories() {
         assertNotNull(
-                new FilmService(filmRepository, genreRepository)
+                new FilmService(filmRepository, genreRepository, logger)
         );
     }
 
@@ -57,7 +62,7 @@ class FilmServiceTest {
     void shouldRejectNullFilmRepository() {
         assertThrows(
                 NullPointerException.class,
-                () -> new FilmService(null, genreRepository)
+                () -> new FilmService(null, genreRepository, logger)
         );
     }
 
@@ -65,7 +70,7 @@ class FilmServiceTest {
     void shouldRejectNullGenreRepository() {
         assertThrows(
                 NullPointerException.class,
-                () -> new FilmService(filmRepository, null)
+                () -> new FilmService(filmRepository, null, logger)
         );
     }
 
@@ -1008,6 +1013,253 @@ class FilmServiceTest {
                 GenreNotFoundException.class,
                 () -> filmService.removeGenreFromFilm(film.filmId(), 999)
         );
+    }
+
+    // ---------------------------------------------------------
+    // LOGGING
+    // ---------------------------------------------------------
+
+    @Test
+    void shouldRejectNullLogger() {
+        assertThrows(
+                NullPointerException.class,
+                () -> new FilmService(filmRepository, genreRepository, null)
+        );
+    }
+
+    @Test
+    void shouldLogFilmCreated() {
+        Film created = filmService.createFilm(
+                film(null, "  Inception  ", 2010, null, List.of())
+        );
+
+        RecordingLogger.Event event = logger.only("film.created");
+        assertEquals("INFO", event.level());
+        assertNull(event.userId());
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals("Inception", event.context().get("title"));
+        assertEquals(List.of("film.created"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenFilmCreationFailsValidation() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.createFilm(film(null, "  ", 2010, null, List.of()))
+        );
+
+        RecordingLogger.Event event = logger.only("film.create.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("ValidationException", event.context().get("reason"));
+        assertEquals(List.of("film.create.rejected"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenCreatingNullFilm() {
+        assertThrows(ValidationException.class, () -> filmService.createFilm(null));
+
+        RecordingLogger.Event event = logger.only("film.create.rejected");
+        assertEquals("null", event.context().get("title"));
+    }
+
+    @Test
+    void shouldLogWarningWhenFilmCreationReferencesUnknownGenre() {
+        assertThrows(
+                GenreNotFoundException.class,
+                () -> filmService.createFilm(
+                        film(null, "Heat", 1995, null, List.of(new Genre(99L, "Crime")))
+                )
+        );
+
+        RecordingLogger.Event event = logger.only("film.create.rejected");
+        assertEquals("GenreNotFoundException", event.context().get("reason"));
+        assertEquals("Heat", event.context().get("title"));
+    }
+
+    @Test
+    void shouldNotLogFilmCreatedWhenRepositoryFails() {
+        FilmRepository failing = new FakeFilmRepository() {
+            @Override
+            public Film createFilm(Film film) {
+                throw new IllegalStateException("db down");
+            }
+        };
+        FilmService service = new FilmService(failing, genreRepository, logger);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.createFilm(film(null, "Heat", 1995, null, List.of()))
+        );
+
+        assertTrue(logger.isEmpty());
+    }
+
+    @Test
+    void shouldLogFilmUpdated() {
+        Film created = addFilm("Heat", 1995);
+        logger.clear();
+
+        filmService.updateFilm(created.filmId(), film(null, "Heat (Director's Cut)", 1995, null, List.of()));
+
+        RecordingLogger.Event event = logger.only("film.updated");
+        assertEquals("INFO", event.level());
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals("Heat (Director's Cut)", event.context().get("title"));
+    }
+
+    @Test
+    void shouldLogWarningWhenFilmUpdateFailsValidation() {
+        Film created = addFilm("Heat", 1995);
+        logger.clear();
+
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.updateFilm(created.filmId(), film(null, "Heat", 1800, null, List.of()))
+        );
+
+        RecordingLogger.Event event = logger.only("film.update.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("ValidationException", event.context().get("reason"));
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals(List.of("film.update.rejected"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenFilmUpdateHasInvalidId() {
+        assertThrows(
+                ValidationException.class,
+                () -> filmService.updateFilm(0, film(null, "Heat", 1995, null, List.of()))
+        );
+
+        assertEquals(0L, logger.only("film.update.rejected").context().get("film_id"));
+    }
+
+    @Test
+    void shouldNotLogFilmUpdatedWhenFilmDoesNotExist() {
+        assertThrows(
+                FilmNotFoundException.class,
+                () -> filmService.updateFilm(999, film(null, "Heat", 1995, null, List.of()))
+        );
+
+        assertFalse(logger.eventNames().contains("film.updated"));
+    }
+
+    @Test
+    void shouldLogFilmDeleted() {
+        Film created = addFilm("Heat", 1995);
+        logger.clear();
+
+        assertTrue(filmService.deleteFilm(created.filmId()));
+
+        RecordingLogger.Event event = logger.only("film.deleted");
+        assertEquals("INFO", event.level());
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals(List.of("film.deleted"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenDeletingMissingFilm() {
+        assertFalse(filmService.deleteFilm(999));
+
+        RecordingLogger.Event event = logger.only("film.delete.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(999L, event.context().get("film_id"));
+        assertEquals(List.of("film.delete.not_found"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogWarningWhenFilmIsNotFoundById() {
+        assertThrows(FilmNotFoundException.class, () -> filmService.getFilmById(42));
+
+        RecordingLogger.Event event = logger.only("film.not_found");
+        assertEquals("WARN", event.level());
+        assertEquals(42L, event.context().get("film_id"));
+    }
+
+    @Test
+    void shouldNotLogWhenFilmIsFoundById() {
+        Film created = addFilm("Heat", 1995);
+        logger.clear();
+
+        filmService.getFilmById(created.filmId());
+
+        assertTrue(logger.isEmpty());
+    }
+
+    @Test
+    void shouldNotLogForReadOnlyListings() {
+        addFilm("Heat", 1995);
+        logger.clear();
+
+        filmService.getAllFilms(1, 10);
+        filmService.getFilmsByTitle("heat", 1, 10);
+        filmService.getFilmsByYear(1995, 1, 10);
+
+        assertTrue(logger.isEmpty());
+    }
+
+    @Test
+    void shouldLogGenreAssignedToFilm() {
+        Film created = addFilm("Heat", 1995);
+        Genre crime = addGenre("Crime");
+        logger.clear();
+
+        assertTrue(filmService.assignGenreToFilm(created.filmId(), crime.genreId()));
+
+        RecordingLogger.Event event = logger.only("film.genre.assigned");
+        assertEquals("INFO", event.level());
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals(crime.genreId(), event.context().get("genre_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenGenreIsAlreadyAssigned() {
+        Film created = addFilm("Heat", 1995);
+        Genre crime = addGenre("Crime");
+        filmService.assignGenreToFilm(created.filmId(), crime.genreId());
+        logger.clear();
+
+        assertFalse(filmService.assignGenreToFilm(created.filmId(), crime.genreId()));
+
+        RecordingLogger.Event event = logger.only("film.genre.assign.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("already_assigned", event.context().get("reason"));
+        assertEquals(List.of("film.genre.assign.rejected"), logger.eventNames());
+    }
+
+    @Test
+    void shouldLogGenreRemovedFromFilm() {
+        Film created = addFilm("Heat", 1995);
+        Genre crime = addGenre("Crime");
+        filmService.assignGenreToFilm(created.filmId(), crime.genreId());
+        logger.clear();
+
+        assertTrue(filmService.removeGenreFromFilm(created.filmId(), crime.genreId()));
+
+        RecordingLogger.Event event = logger.only("film.genre.removed");
+        assertEquals("INFO", event.level());
+        assertEquals(created.filmId(), event.context().get("film_id"));
+        assertEquals(crime.genreId(), event.context().get("genre_id"));
+    }
+
+    @Test
+    void shouldLogWarningWhenRemovingGenreThatWasNotAssigned() {
+        Film created = addFilm("Heat", 1995);
+        Genre crime = addGenre("Crime");
+        logger.clear();
+
+        assertFalse(filmService.removeGenreFromFilm(created.filmId(), crime.genreId()));
+
+        RecordingLogger.Event event = logger.only("film.genre.remove.rejected");
+        assertEquals("WARN", event.level());
+        assertEquals("not_assigned", event.context().get("reason"));
+    }
+
+    @Test
+    void shouldNotLeakDescriptionIntoFilmLogs() {
+        filmService.createFilm(film(null, "Heat", 1995, "A very long secret synopsis", List.of()));
+
+        assertFalse(logger.only("film.created").context().containsKey("description"));
     }
 
     // ---------------------------------------------------------
